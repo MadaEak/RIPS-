@@ -599,6 +599,263 @@ def _aplicar_codigo_prestador(target_inv, cambios: List[str]) -> None:
         )
 
 
+
+# ---------------------------------------------------------------------------
+# Estructura sector salud - Resolución 000948 de 2026
+# ---------------------------------------------------------------------------
+
+CAMPOS_SECTOR_SALUD_948 = (
+    "CODIGO_PRESTADOR",
+    "MODALIDAD_PAGO",
+    "COBERTURA_PLAN_BENEFICIOS",
+    "NUMERO_AUTORIZACION",
+    "NUMERO_ENTREGA_MIPRES",
+    "NUMERO_MIPRES",
+    "FACTURA_SIN_CONTRATO",
+    "COPAGO",
+    "CUOTA_MODERADORA",
+    "CUOTA_RECUPERACION",
+    "PAGOS_COMPARTIDOS",
+    "ANTICIPO",
+    "NUMERO_CONTRATO",
+    "NUMERO_POLIZA",
+)
+
+
+def _normalizar_nombre_campo(valor: str) -> str:
+    return re.sub(r"\s+", " ", (valor or "").strip()).upper()
+
+
+def _buscar_collection_sector_salud(target_inv):
+    for interoperabilidad in target_inv.iter():
+        if (
+            not isinstance(interoperabilidad.tag, str)
+            or _local(interoperabilidad.tag) != "Interoperabilidad"
+        ):
+            continue
+
+        for group in interoperabilidad:
+            if not isinstance(group.tag, str) or _local(group.tag) != "Group":
+                continue
+            if (group.get("schemeName") or "").strip().lower() != "sector salud":
+                continue
+
+            for collection in group:
+                if (
+                    isinstance(collection.tag, str)
+                    and _local(collection.tag) == "Collection"
+                    and (collection.get("schemeName") or "").strip().lower()
+                    == "usuario"
+                ):
+                    return interoperabilidad, group, collection
+    return None, None, None
+
+
+def _actualizar_resolucion_948(target_inv, cambios: List[str]) -> None:
+    for custom_tag in target_inv.iter():
+        if (
+            not isinstance(custom_tag.tag, str)
+            or _local(custom_tag.tag) != "CustomTagGeneral"
+        ):
+            continue
+
+        hijos = [h for h in custom_tag if isinstance(h.tag, str)]
+        for indice, hijo in enumerate(hijos):
+            if _local(hijo.tag) != "Name":
+                continue
+
+            nombre = _normalizar_nombre_campo(hijo.text or "")
+            if "ACTO ADMIN" not in nombre:
+                continue
+
+            value_el = None
+            for siguiente in hijos[indice + 1:]:
+                if _local(siguiente.tag) == "Value":
+                    value_el = siguiente
+                    break
+                if _local(siguiente.tag) == "Name":
+                    break
+
+            if value_el is not None:
+                anterior = (value_el.text or "").strip()
+                nuevo = "Resolución 000948:2026"
+                if anterior != nuevo:
+                    value_el.text = nuevo
+                    cambios.append(
+                        "Acto administrativo corregido "
+                        f"({anterior!r} -> {nuevo!r})"
+                    )
+                return
+
+
+def _reconstruir_sector_salud_948(target_inv, cambios: List[str]) -> None:
+    """Reconstruye Collection Usuario con la estructura aceptada por Mutual."""
+    interoperabilidad, _, collection = _buscar_collection_sector_salud(target_inv)
+    if collection is None:
+        cambios.append(
+            "⚠️ No se encontró Group/Collection del nodo Sector Salud"
+        )
+        return
+
+    valores = {}
+    atributos = {}
+
+    for ai in list(collection):
+        if not isinstance(ai.tag, str) or _local(ai.tag) != "AdditionalInformation":
+            continue
+
+        name_el = next(
+            (
+                c for c in ai
+                if isinstance(c.tag, str) and _local(c.tag) == "Name"
+            ),
+            None,
+        )
+        value_el = next(
+            (
+                c for c in ai
+                if isinstance(c.tag, str) and _local(c.tag) == "Value"
+            ),
+            None,
+        )
+        if name_el is None:
+            continue
+
+        nombre = _normalizar_nombre_campo(name_el.text or "")
+        valores[nombre] = (value_el.text or "").strip() if value_el is not None else ""
+        atributos[nombre] = dict(value_el.attrib) if value_el is not None else {}
+
+    tipo_usuario = valores.get("TIPO_USUARIO", "").upper()
+    cobertura_id_actual = atributos.get(
+        "COBERTURA_PLAN_BENEFICIOS", {}
+    ).get("schemeID", "")
+
+    if "SUBSIDIADO" in tipo_usuario or cobertura_id_actual == "17":
+        cobertura_texto = "Plan UPC — Régimen Subsidiado"
+        cobertura_id = "17"
+    else:
+        cobertura_texto = "Plan UPC — Régimen Contributivo"
+        cobertura_id = "16"
+
+    datos = {
+        "CODIGO_PRESTADOR": (
+            valores.get("CODIGO_PRESTADOR") or CODIGO_PRESTADOR_CEMIC,
+            {},
+        ),
+        "MODALIDAD_PAGO": (
+            "Por evento",
+            {
+                "schemeName": "salud_modalidad_pago.gc",
+                "schemeID": "04",
+            },
+        ),
+        "COBERTURA_PLAN_BENEFICIOS": (
+            cobertura_texto,
+            {
+                "schemeName": "salud_cobertura.gc",
+                "schemeID": cobertura_id,
+            },
+        ),
+        "NUMERO_AUTORIZACION": (
+            valores.get("NUMERO_AUTORIZACION", ""),
+            {},
+        ),
+        "NUMERO_ENTREGA_MIPRES": (
+            valores.get("NUMERO_ENTREGA_MIPRES", ""),
+            {},
+        ),
+        "NUMERO_MIPRES": (
+            valores.get("NUMERO_MIPRES", ""),
+            {},
+        ),
+        "FACTURA_SIN_CONTRATO": (
+            valores.get("FACTURA_SIN_CONTRATO", ""),
+            {
+                "schemeName": "salud_cobertura.gc",
+                "schemeID": "",
+            },
+        ),
+        "COPAGO": (
+            valores.get("COPAGO") or "0.00",
+            {},
+        ),
+        "CUOTA_MODERADORA": (
+            valores.get("CUOTA_MODERADORA") or "0.00",
+            {},
+        ),
+        "CUOTA_RECUPERACION": (
+            valores.get("CUOTA_RECUPERACION", ""),
+            {},
+        ),
+        "PAGOS_COMPARTIDOS": (
+            valores.get("PAGOS_COMPARTIDOS") or "0.00",
+            {},
+        ),
+        "ANTICIPO": (
+            valores.get("ANTICIPO") or "0.00",
+            {},
+        ),
+        "NUMERO_CONTRATO": (
+            valores.get("NUMERO_CONTRATO", ""),
+            {},
+        ),
+        "NUMERO_POLIZA": (
+            valores.get("NUMERO_POLIZA", ""),
+            {},
+        ),
+    }
+
+    if interoperabilidad is not None:
+        for child in list(interoperabilidad):
+            if (
+                isinstance(child.tag, str)
+                and _local(child.tag) == "InteroperabilidadPT"
+            ):
+                interoperabilidad.remove(child)
+                cambios.append("Eliminado bloque heredado InteroperabilidadPT")
+
+    for child in list(collection):
+        if (
+            isinstance(child.tag, str)
+            and _local(child.tag) == "AdditionalInformation"
+        ):
+            collection.remove(child)
+
+    for nombre in CAMPOS_SECTOR_SALUD_948:
+        valor, attrs = datos[nombre]
+
+        ai = etree.SubElement(
+            collection,
+            _tag_como_hijo(collection, "AdditionalInformation"),
+        )
+        name_el = etree.SubElement(
+            ai,
+            _tag_como_hijo(ai, "Name"),
+        )
+        name_el.text = nombre
+
+        value_el = etree.SubElement(
+            ai,
+            _tag_como_hijo(ai, "Value"),
+        )
+        value_el.text = valor
+        for clave, contenido in attrs.items():
+            value_el.set(clave, contenido)
+
+    cambios.append(
+        "Reconstruido nodo Sector Salud con los 14 campos "
+        "de la Resolución 000948 de 2026"
+    )
+
+
+def _aplicar_estructura_sector_salud_948(
+    target_inv,
+    cambios: List[str],
+) -> None:
+    _actualizar_resolucion_948(target_inv, cambios)
+    _reconstruir_sector_salud_948(target_inv, cambios)
+
+
 # ---------------------------------------------------------------------------
 # CUCON
 # ---------------------------------------------------------------------------
@@ -709,6 +966,9 @@ def corregir_xml(xml_bytes: bytes, plantilla_bytes: bytes, cucon: str,
         # 7) CUCON dentro de la factura embebida
         if cucon and cucon.strip():
             _aplicar_cucon(target_inv, cucon.strip(), res.cambios)
+
+        # Estructura definitiva del nodo Sector Salud según Resolución 948.
+        _aplicar_estructura_sector_salud_948(target_inv, res.cambios)
 
         # 7) Re-empaquetar: reemplazar el Description con la invoice corregida.
         #    Se reemplaza SOLO el texto del Description; el resto del
