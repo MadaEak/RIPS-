@@ -64,9 +64,8 @@ EXCLUIR_TAGS = {
 
 # Rutas (por tag local) de valores de CONFIGURACIÓN DEL EMISOR que SÍ deben
 # tomarse de la plantilla (porque son fijos del facturador). Se expresan como
-# subruta de tags locales desde la raíz de la Invoice. El TaxScheme/TaxLevelCode
-# se restringe al PARTY DEL PAGADOR (AccountingCustomerParty) para no pisar los
-# del emisor (CEMIC, que usa 01/IVA).
+# subruta de tags locales desde la raíz de la Invoice.
+# SOLO inserta si faltan; no reemplaza (para eso está CONFIG_SOBRESCRIBIR).
 CONFIG_FIJA = {
     "AccountingCustomerParty/TaxScheme/ID",
     "AccountingCustomerParty/TaxScheme/Name",
@@ -74,6 +73,18 @@ CONFIG_FIJA = {
     "FabricanteSoftware",
     "NotificationPreferences",
     "ForeignCurrencyExtension",
+}
+
+# Rutas del emisor (CEMIC/AccountingSupplierParty) cuyos valores deben
+# SOBRESCRIBIRSE desde la plantilla aunque ya existan en la factura incompleta,
+# porque la factura incompleta puede traerlos incorrectos:
+#   TaxScheme/ID: 01 (IVA) -> debe ser ZZ (No aplica, exento)
+#   TaxScheme/Name: IVA -> debe ser No aplica
+# NOTA: CorporateRegistrationScheme/ID (FE vs FEC) NO se toca porque depende
+# del consecutivo de la factura, no es un campo de configuración del emisor.
+CONFIG_SOBRESCRIBIR = {
+    "AccountingSupplierParty/Party/PartyTaxScheme/TaxScheme/ID",
+    "AccountingSupplierParty/Party/PartyTaxScheme/TaxScheme/Name",
 }
 
 # Rutas que NUNCA deben sobrescribirse de la plantilla (conservar lo propio)
@@ -90,7 +101,6 @@ NO_SOBRESCRIBIR = {
     "InvoiceLine/InvoicedQuantity",
     "InvoiceLine/LineExtensionAmount",
     "InvoiceLine/Price",
-    "AccountingSupplierParty",
     "AccountingCustomerParty",
 }
 
@@ -240,19 +250,29 @@ def _crear_ruta(target_root, source_root, ruta_padre, cambios: List[str]):
         else:
             cur = siguiente
     return cur
-    insert_at = len(tgt_parent)
-    for j in range(idx + 1, len(hijos_src)):
-        nxt = hijos_src[j]
-        nxt_tag = _local(nxt.tag)
-        # buscar ese hijo en target_parent
-        for k, tc in enumerate(tgt_parent):
-            if _local(tc.tag) == nxt_tag:
-                insert_at = k
-                break
-        if insert_at < len(tgt_parent):
-            break
-    tgt_parent.insert(insert_at, dup)
-    cambios.append(f"Insertado '{src_child_path}'")
+
+
+# ---------------------------------------------------------------------------
+# CDATA en Description con XML embebido
+# ---------------------------------------------------------------------------
+
+def _asegurar_cdata_descriptions(root) -> None:
+    """Envuelve en CDATA el contenido de cada <Description> que contenga XML
+    embebido (empieza con '<' o '<?xml').
+
+    Cuando lxml parsea un CDATA lo convierte internamente a texto plano; al
+    serializar de vuelta sin marcarlo de nuevo como CDATA escaparía los '<' y
+    '>' dejando el AttachedDocument con '&lt;' en lugar de '<', lo que haría
+    inválida la factura embebida para los validadores de la DIAN.
+    """
+    for el in root.iter():
+        if not isinstance(el.tag, str):
+            continue
+        if _local(el.tag) != "Description":
+            continue
+        txt = el.text or ""
+        if txt.lstrip().startswith("<"):
+            el.text = etree.CDATA(txt)
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +315,34 @@ def _find_by_local_path(root, ruta_local: str):
 
     rec(root, [])
     return resultados
+
+
+def _aplicar_config_sobrescribir(source_root, target_root, cambios: List[str]) -> None:
+    """Para las rutas en CONFIG_SOBRESCRIBIR: sobrescribe el texto de la hoja
+    en target con el valor de la plantilla, aunque ya exista con otro valor.
+
+    Corrige campos de configuración del emisor (CEMIC) que la factura incompleta
+    puede traer incorrectos, p.ej. TaxScheme/ID=01 (IVA) en lugar de ZZ (No aplica).
+    Solo actúa cuando el valor difiere del de la plantilla.
+    """
+    for ruta in CONFIG_SOBRESCRIBIR:
+        src_els = _find_by_local_path(source_root, ruta)
+        if not src_els:
+            continue
+        src_val = (src_els[0].text or "").strip()
+        tgt_els = _find_by_local_path(target_root, ruta)
+        if tgt_els:
+            tgt_val = (tgt_els[0].text or "").strip()
+            if tgt_val != src_val:
+                tgt_els[0].text = src_val
+                cambios.append(
+                    f"Config emisor corregida: '{ruta}' ({tgt_val!r} -> {src_val!r})"
+                )
+        else:
+            # No existe: insertar (caso raro, pero posible)
+            dup = copy.deepcopy(src_els[0])
+            target_root.append(dup)
+            cambios.append(f"Config emisor insertada: '{ruta}'")
 
 
 # ---------------------------------------------------------------------------
@@ -393,18 +441,34 @@ def corregir_xml(xml_bytes: bytes, plantilla_bytes: bytes, cucon: str,
         target_inv = etree.fromstring(invoice_text.encode("utf-8"))
         _merge_invoice(plantilla_inv, target_inv, res.cambios)
 
-        # 5) Configuración fija del emisor
+        # 5) Configuración fija del emisor (inserta si falta)
         _aplicar_config_fija(plantilla_inv, target_inv, res.cambios)
+
+        # 5b) Corrección de campos del emisor con valor incorrecto
+        #     (sobrescribe TaxScheme/ID=01->ZZ, Name=IVA->No aplica)
+        _aplicar_config_sobrescribir(plantilla_inv, target_inv, res.cambios)
 
         # 6) CUCON dentro de la factura embebida
         if cucon and cucon.strip():
             _aplicar_cucon(target_inv, cucon.strip(), res.cambios)
 
-        # 7) Re-empaquetar: reemplazar el Description con la invoice corregida
+        # 7) Re-empaquetar: reemplazar el Description con la invoice corregida.
         #    Se reemplaza SOLO el texto del Description; el resto del
         #    AttachedDocument (incluida la firma) se conserva intacto.
-        new_invoice = etree.tostring(target_inv, encoding="unicode")
-        desc.text = new_invoice
+        #    IMPORTANTE: se usa etree.CDATA para que lxml NO escape los < y >
+        #    de la invoice embebida al serializar el AttachedDocument exterior.
+        #    Sin CDATA, lxml convertiría '<Invoice>' en '&lt;Invoice&gt;' (que
+        #    aparece como 'gt' en el XML resultante), haciendo el archivo inválido.
+        new_invoice_xml = '<?xml version="1.0" encoding="UTF-8"?>\n' + etree.tostring(
+            target_inv, encoding="unicode"
+        )
+        desc.text = etree.CDATA(new_invoice_xml)
+
+        # Asegurar que TODOS los Description con XML embebido usen CDATA.
+        # Cuando lxml parsea un CDATA lo convierte a texto plano internamente;
+        # al serializar de vuelta, si no se marca como CDATA, escapa los </>.
+        # Esto afecta al ApplicationResponse y a cualquier otro XML embebido.
+        _asegurar_cdata_descriptions(adb_root)
 
         # Pretty-print SOLO de la invoice (para legibilidad del preview), sin
         # tocar el exterior del AttachedDocument (preserva la firma).

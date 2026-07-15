@@ -307,6 +307,7 @@ class CreadorJsonRips:
                 "codZonaTerritorialResidencia": cod_zona,
                 "incapacidad": "NO",
                 "codPaisOrigen": "170",
+                "registroSIRAS": None,
                 "servicios": {
                     "consultas": [],
                     "procedimientos": [],
@@ -364,6 +365,15 @@ class CreadorJsonRips:
                 "conceptoRecaudo": concepto_rec,
                 "valorPagoModerador": copago,
                 "numFEVPagoModerador": None,
+                "codigoVIDA": None,
+                "codDiagnosticoPrincipalCIE11": None,
+                "nomCodDiagnosticoPrincipalCIE11": None,
+                "codDiagnosticoRelacionado1CIE11": None,
+                "nomCodDiagnosticoRelacionado1CIE11": None,
+                "codDiagnosticoRelacionado2CIE11": None,
+                "nomCodDiagnosticoRelacionado2CIE11": None,
+                "codDiagnosticoRelacionado3CIE11": None,
+                "nomCodDiagnosticoRelacionado3CIE11": None,
                 "consecutivo": idx
             }
             return fact, u_key, serv_obj
@@ -407,6 +417,13 @@ class CreadorJsonRips:
                 "conceptoRecaudo": "05",
                 "valorPagoModerador": 0,
                 "numFEVPagoModerador": None,
+                "codigoVIDA": None,
+                "codDiagnosticoPrincipalCIE11": None,
+                "nomCodDiagnosticoPrincipalCIE11": None,
+                "codDiagnosticoRelacionadoCIE11": None,
+                "nomCodDiagnosticoRelacionadoCIE11": None,
+                "codComplicacionCIE11": None,
+                "nomCodComplicacionCIE11": None,
                 "consecutivo": idx
             }
             return fact, u_key, serv_obj
@@ -458,6 +475,7 @@ class CreadorJsonRips:
                 "conceptoRecaudo": "05",
                 "valorPagoModerador": 0,
                 "numFEVPagoModerador": None,
+                "codigoVIDA": None,
                 "consecutivo": idx
             }
             return fact, u_key, serv_obj
@@ -501,6 +519,7 @@ class CreadorJsonRips:
                 "conceptoRecaudo": "05",
                 "valorPagoModerador": 0,
                 "numFEVPagoModerador": None,
+                "codigoVIDA": None,
                 "consecutivo": idx
             }
             return fact, u_key, serv_obj
@@ -532,6 +551,21 @@ class CreadorJsonRips:
                 "condicionDestinoUsuarioEgreso": dest or "01",
                 "codDiagnosticoCausaMuerte": parts[16] if parts[16] and parts[16].lower() != "null" else None,
                 "fechaEgreso": parsed_datetime_to_str(parts[17], parts[18]),
+                "codigoVIDA": None,
+                "codDiagnosticoPrincipalCIE11": None,
+                "nomCodDiagnosticoPrincipalCIE11": None,
+                "codDiagnosticoPrincipalECIE11": None,
+                "nomCodDiagnosticoPrincipalECIE11": None,
+                "codDiagnosticoRelacionadoE1CIE11": None,
+                "nomCodDiagnosticoRelacionadoE1CIE11": None,
+                "codDiagnosticoRelacionadoE2CIE11": None,
+                "nomCodDiagnosticoRelacionadoE2CIE11": None,
+                "codDiagnosticoRelacionadoE3CIE11": None,
+                "nomCodDiagnosticoRelacionadoE3CIE11": None,
+                "codComplicacionCIE11": None,
+                "nomCodComplicacionCIE11": None,
+                "codDiagnosticoCausaMuerteCIE11": None,
+                "nomCodDiagnosticoCausaMuerteCIE11": None,
                 "consecutivo": idx
             }
             return fact, u_key, serv_obj
@@ -558,6 +592,21 @@ class CreadorJsonRips:
                 "condicionDestinoUsuarioEgreso": dest or "01",
                 "codDiagnosticoCausaMuerte": parts[13] if parts[13] and parts[13].lower() != "null" else None,
                 "fechaEgreso": parsed_datetime_to_str(parts[14], parts[15]),
+                "codigoVIDA": None,
+                "codDiagnosticoPrincipalCIE11": None,
+                "nomCodDiagnosticoPrincipalCIE11": None,
+                "codDiagnosticoPrincipalECIE11": None,
+                "nomCodDiagnosticoPrincipalECIE11": None,
+                "codDiagnosticoRelacionadoE1CIE11": None,
+                "nomCodDiagnosticoRelacionadoE1CIE11": None,
+                "codDiagnosticoRelacionadoE2CIE11": None,
+                "nomCodDiagnosticoRelacionadoE2CIE11": None,
+                "codDiagnosticoRelacionadoE3CIE11": None,
+                "nomCodDiagnosticoRelacionadoE3CIE11": None,
+                "codComplicacionCIE11": None,
+                "nomCodComplicacionCIE11": None,
+                "codDiagnosticoCausaMuerteCIE11": None,
+                "nomCodDiagnosticoCausaMuerteCIE11": None,
                 "consecutivo": idx
             }
             return fact, u_key, serv_obj
@@ -603,6 +652,11 @@ class CreadorJsonRips:
                 "condicionDestinoUsuarioEgreso": "01" if not parts[11] else "03",
                 "codDiagnosticoCausaMuerte": parts[11] if parts[11] and parts[11].lower() != "null" else None,
                 "fechaEgreso": fecha_egreso,
+                "codigoVIDA": None,
+                "codDiagnosticoPrincipalCIE11": None,
+                "nomCodDiagnosticoPrincipalCIE11": None,
+                "codDiagnosticoCausaMuerteCIE11": None,
+                "nomCodDiagnosticoCausaMuerteCIE11": None,
                 "consecutivo": idx
             }
             return fact, u_key, serv_obj
@@ -644,7 +698,6 @@ class CreadorJsonRips:
             for u_key in fact_info["usuarios_ids"]:
                 if u_key in mapa_us:
                     user_obj = json.loads(json.dumps(mapa_us[u_key]))
-                    user_obj["consecutivo"] = user_idx
                     user_idx += 1
                     
                     servicios_encontrados = False
@@ -676,12 +729,59 @@ class CreadorJsonRips:
                                     pass
                                     
                     if servicios_encontrados:
+                        # En "Ambos (RIPS + CSV)", los servicios se generan desde
+                        # el ZIP. Las estancias tipoOS 03 deben llevar una fecha
+                        # distinta por cada día facturado.
+                        hospitalizaciones = user_obj["servicios"].get(
+                            "hospitalizacion", []
+                        )
+                        otros_servicios = user_obj["servicios"].get(
+                            "otrosServicios", []
+                        )
+
+                        fecha_base_estancia = None
+                        if hospitalizaciones:
+                            fecha_base_estancia = hospitalizaciones[0].get(
+                                "fechaInicioAtencion"
+                            )
+
+                        estancias = [
+                            servicio
+                            for servicio in otros_servicios
+                            if str(servicio.get("tipoOS", "")).zfill(2) == "03"
+                        ]
+
+                        if estancias:
+                            if not fecha_base_estancia:
+                                fecha_base_estancia = estancias[0].get(
+                                    "fechaSuministroTecnologia"
+                                )
+
+                            try:
+                                fecha_base_dt = pd.to_datetime(
+                                    fecha_base_estancia,
+                                    errors="raise",
+                                )
+                                for indice_dia, servicio in enumerate(estancias):
+                                    servicio["fechaSuministroTecnologia"] = (
+                                        fecha_base_dt
+                                        + pd.Timedelta(days=indice_dia)
+                                    ).strftime("%Y-%m-%d %H:%M")
+                            except Exception:
+                                pass
+
+                        for consecutivo, servicio in enumerate(
+                            otros_servicios,
+                            start=1,
+                        ):
+                            servicio["consecutivo"] = consecutivo
+
                         servicios_filtrados = {}
                         for k, v in user_obj["servicios"].items():
                             if len(v) > 0:
                                 servicios_filtrados[k] = v
                         user_obj["servicios"] = servicios_filtrados
-                        
+
                         usuarios_factura.append(user_obj)
                         
             fact_info["usuarios"] = usuarios_factura
@@ -755,8 +855,8 @@ class CreadorJsonRips:
                 "codMunicipioResidencia": mpio,
                 "codZonaTerritorialResidencia": "01",
                 "incapacidad": "NO",
-                "consecutivo": user_idx,
                 "codPaisOrigen": "170",
+                "registroSIRAS": None,
                 "servicios": {
                     "consultas": [],
                     "procedimientos": [],
@@ -862,6 +962,21 @@ class CreadorJsonRips:
                         "condicionDestinoUsuarioEgreso": "01",
                         "codDiagnosticoCausaMuerte": None,
                         "fechaEgreso": fecha_egreso,
+                        "codigoVIDA": None,
+                        "codDiagnosticoPrincipalCIE11": None,
+                        "nomCodDiagnosticoPrincipalCIE11": None,
+                        "codDiagnosticoPrincipalECIE11": None,
+                        "nomCodDiagnosticoPrincipalECIE11": None,
+                        "codDiagnosticoRelacionadoE1CIE11": None,
+                        "nomCodDiagnosticoRelacionadoE1CIE11": None,
+                        "codDiagnosticoRelacionadoE2CIE11": None,
+                        "nomCodDiagnosticoRelacionadoE2CIE11": None,
+                        "codDiagnosticoRelacionadoE3CIE11": None,
+                        "nomCodDiagnosticoRelacionadoE3CIE11": None,
+                        "codComplicacionCIE11": None,
+                        "nomCodComplicacionCIE11": None,
+                        "codDiagnosticoCausaMuerteCIE11": None,
+                        "nomCodDiagnosticoCausaMuerteCIE11": None,
                         "consecutivo": c_hosp
                     }
                     user_obj["servicios"]["hospitalizacion"].append(hosp_obj)
@@ -885,6 +1000,7 @@ class CreadorJsonRips:
                         os_obj = {
                             "codPrestador": hab,
                             "numAutorizacion": aut,
+                            "codigoVIDA": None,
                             "idMIPRES": None,
                             "fechaSuministroTecnologia": fecha_sumin,
                             "tipoOS": "03",
@@ -906,6 +1022,7 @@ class CreadorJsonRips:
                     os_obj = {
                         "codPrestador": hab,
                         "numAutorizacion": aut,
+                        "codigoVIDA": None,
                         "idMIPRES": None,
                         "fechaSuministroTecnologia": fecha_atencion,
                         "tipoOS": "01" if "DISPOSITIVO" in desc_prod.upper() else "04",
@@ -923,6 +1040,44 @@ class CreadorJsonRips:
                     }
                     user_obj["servicios"]["otrosServicios"].append(os_obj)
                     c_os += 1
+
+            # Corrección final de fechas para estancias diarias generadas desde CSV.
+            # Se toma como fecha base la fechaInicioAtencion de hospitalización y se
+            # asigna un día consecutivo a cada registro tipoOS 03.
+            hospitalizaciones = user_obj["servicios"].get("hospitalizacion", [])
+            otros_servicios = user_obj["servicios"].get("otrosServicios", [])
+
+            fecha_base_estancia = None
+            if hospitalizaciones:
+                fecha_base_estancia = hospitalizaciones[0].get(
+                    "fechaInicioAtencion"
+                )
+
+            estancias = [
+                servicio
+                for servicio in otros_servicios
+                if str(servicio.get("tipoOS", "")).zfill(2) == "03"
+            ]
+
+            if fecha_base_estancia and estancias:
+                try:
+                    fecha_base_dt = pd.to_datetime(
+                        fecha_base_estancia,
+                        errors="raise",
+                    )
+                    for indice_dia, servicio in enumerate(estancias):
+                        servicio["fechaSuministroTecnologia"] = (
+                            fecha_base_dt + pd.Timedelta(days=indice_dia)
+                        ).strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    pass
+
+            # Renumerar consecutivos de otrosServicios después del ajuste.
+            for consecutivo, servicio in enumerate(
+                otros_servicios,
+                start=1,
+            ):
+                servicio["consecutivo"] = consecutivo
 
             servicios_filtrados = {}
             for k, v in user_obj["servicios"].items():
@@ -943,3 +1098,541 @@ class CreadorJsonRips:
         }
         
         return json_output
+
+    def generar_desde_excel(self, excel_bytes: bytes) -> Dict[str, Dict[str, Any]]:
+        """Genera un diccionario de facturas JSON de RIPS a partir de la plantilla de Excel."""
+        df = pd.read_excel(
+            io.BytesIO(excel_bytes),
+            sheet_name="Datos",
+            dtype=object,
+            keep_default_na=True,
+        )
+        df.columns = [str(c).strip() for c in df.columns]
+        df = df.dropna(how="all")
+        
+        def str_val(val) -> Optional[str]:
+            if val is None or pd.isna(val):
+                return None
+            if isinstance(val, bool):
+                return "1" if val else "0"
+            if isinstance(val, int):
+                return str(val)
+            if isinstance(val, float):
+                if val.is_integer():
+                    return format(val, ".0f")
+                return format(val, ".15g")
+            val_str = str(val).strip()
+            if val_str.lower() in ("nan", "null", "none", ""):
+                return None
+            if re.fullmatch(r"[-+]?\d+\.0", val_str):
+                val_str = val_str[:-2]
+            return val_str
+
+        def first_val(*values):
+            for value in values:
+                if value is not None and not pd.isna(value) and str(value).strip().lower() not in ("", "nan", "null", "none"):
+                    return value
+            return None
+
+        def int_val(val) -> Optional[int]:
+            if pd.isna(val) or val is None or str(val).strip().lower() in ("nan", "null", ""):
+                return None
+            try:
+                return int(float(val))
+            except:
+                return None
+
+        def date_val(val) -> Optional[str]:
+            if val is None or pd.isna(val):
+                return None
+            if isinstance(val, (datetime, pd.Timestamp)):
+                return val.strftime("%Y-%m-%d")
+            if isinstance(val, (int, float)):
+                try:
+                    return (pd.Timestamp("1899-12-30") + pd.to_timedelta(float(val), unit="D")).strftime("%Y-%m-%d")
+                except Exception:
+                    return None
+            val_str = str(val).strip()
+            if val_str.lower() in ("nan", "null", "none", ""):
+                return None
+            parsed = pd.to_datetime(val_str, errors="coerce", dayfirst=True)
+            if not pd.isna(parsed):
+                return parsed.strftime("%Y-%m-%d")
+            return parsed_date_to_str(val_str.split(" ")[0])
+
+        def datetime_val(val) -> Optional[str]:
+            if val is None or pd.isna(val):
+                return None
+            if isinstance(val, (datetime, pd.Timestamp)):
+                return val.strftime("%Y-%m-%d %H:%M")
+            if isinstance(val, (int, float)):
+                try:
+                    return (pd.Timestamp("1899-12-30") + pd.to_timedelta(float(val), unit="D")).strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    return None
+            val_str = str(val).strip()
+            if val_str.lower() in ("nan", "null", "none", ""):
+                return None
+            parsed = pd.to_datetime(val_str, errors="coerce", dayfirst=True)
+            if not pd.isna(parsed):
+                return parsed.strftime("%Y-%m-%d %H:%M")
+            return parsed_datetime_to_str(val_str)
+
+        facturas: Dict[str, Dict[str, Any]] = {}
+        
+        for _, row in df.iterrows():
+            factura = str_val(row.get("numFactura"))
+            if not factura:
+                continue
+            
+            obligado = str_val(row.get("numDocumentoIdObligado")) or "806009230"
+            tipo_nota = str_val(row.get("tipoNota"))
+            num_nota = str_val(row.get("numNota"))
+            
+            if factura not in facturas:
+                facturas[factura] = {
+                    "numDocumentoIdObligado": obligado,
+                    "numFactura": factura,
+                    "tipoNota": tipo_nota,
+                    "numNota": num_nota,
+                    "usuarios": []
+                }
+                
+            tipo_doc = str_val(row.get("tipoDocumentoIdentificacion"))
+            num_doc = str_val(row.get("numDocumentoIdentificacion"))
+            if not tipo_doc or not num_doc:
+                continue
+                
+            user_obj = None
+            for u in facturas[factura]["usuarios"]:
+                if u["tipoDocumentoIdentificacion"] == tipo_doc and u["numDocumentoIdentificacion"] == num_doc:
+                    user_obj = u
+                    break
+                    
+            if not user_obj:
+                tipo_u = str_val(row.get("tipoUsuario"))
+                if tipo_u and len(tipo_u) == 1:
+                    tipo_u = "0" + tipo_u
+                
+                zona = str_val(row.get("codZonaTerritorialResidencia"))
+                if zona and len(zona) == 1:
+                    zona = "0" + zona
+                
+                user_obj = {
+                    "tipoDocumentoIdentificacion": tipo_doc,
+                    "numDocumentoIdentificacion": num_doc,
+                    "tipoUsuario": tipo_u,
+                    "fechaNacimiento": date_val(row.get("fechaNacimiento")),
+                    "codSexo": str_val(row.get("codSexo")),
+                    "codPaisResidencia": str_val(row.get("codPaisResidencia")) or "170",
+                    "codMunicipioResidencia": str_val(row.get("codMunicipioResidencia")),
+                    "codZonaTerritorialResidencia": zona,
+                    "incapacidad": str_val(row.get("incapacidad")) or "NO",
+                    "codPaisOrigen": str_val(row.get("codPaisOrigen")) or "170",
+                    "registroSIRAS": str_val(row.get("registroSIRAS")),
+                    "consecutivo": len(facturas[factura]["usuarios"]) + 1,
+                    "servicios": {
+                        "consultas": [],
+                        "procedimientos": [],
+                        "urgencias": [],
+                        "hospitalizacion": [],
+                        "recienNacidos": [],
+                        "medicamentos": [],
+                        "otrosServicios": []
+                    }
+                }
+                facturas[factura]["usuarios"].append(user_obj)
+                
+            tipo_serv = str_val(row.get("tipoServicio"))
+            alias_servicios = {
+                "consulta": "consultas",
+                "consultas": "consultas",
+                "procedimiento": "procedimientos",
+                "procedimientos": "procedimientos",
+                "urgencia": "urgencias",
+                "urgencias": "urgencias",
+                "hospitalizacion": "hospitalizacion",
+                "hospitalización": "hospitalizacion",
+                "reciennacidos": "recienNacidos",
+                "recien_nacidos": "recienNacidos",
+                "reciénnacidos": "recienNacidos",
+                "medicamento": "medicamentos",
+                "medicamentos": "medicamentos",
+                "otrosservicios": "otrosServicios",
+                "otros_servicios": "otrosServicios",
+            }
+            tipo_serv = alias_servicios.get((tipo_serv or "").replace(" ", "").lower())
+            if not tipo_serv:
+                continue
+                
+            s_obj = {}
+            if tipo_serv == "consultas":
+                fin = str_val(row.get("finalidadTecnologiaSalud"))
+                if fin and len(fin) == 1: fin = "0" + fin
+                causa = str_val(row.get("causaMotivoAtencion"))
+                if causa and len(causa) == 1: causa = "0" + causa
+                tdx = str_val(row.get("tipoDiagnosticoPrincipal"))
+                if tdx and len(tdx) == 1: tdx = "0" + tdx
+                concepto = str_val(row.get("conceptoRecaudo"))
+                if concepto and len(concepto) == 1: concepto = "0" + concepto
+                
+                s_obj = {
+                    "codPrestador": str_val(row.get("codPrestador")),
+                    "fechaInicioAtencion": datetime_val(row.get("fechaInicioAtencion")),
+                    "numAutorizacion": str_val(row.get("numAutorizacion")),
+                    "codConsulta": str_val(row.get("codConsulta")),
+                    "modalidadGrupoServicioTecSal": str_val(row.get("modalidadGrupoServicioTecSal")),
+                    "grupoServicios": str_val(row.get("grupoServicios")),
+                    "codServicio": int_val(row.get("codServicio")),
+                    "finalidadTecnologiaSalud": fin,
+                    "causaMotivoAtencion": causa,
+                    "codDiagnosticoPrincipal": str_val(row.get("codDiagnosticoPrincipal")),
+                    "codDiagnosticoRelacionado1": str_val(row.get("codDiagnosticoRelacionado1")),
+                    "codDiagnosticoRelacionado2": str_val(row.get("codDiagnosticoRelacionado2")),
+                    "codDiagnosticoRelacionado3": str_val(row.get("codDiagnosticoRelacionado3")),
+                    "tipoDiagnosticoPrincipal": tdx,
+                    "tipoDocumentoIdentificacion": str_val(row.get("tipoDocumentoIdentificacion_profesional")),
+                    "numDocumentoIdentificacion": str_val(row.get("numDocumentoIdentificacion_profesional")),
+                    "vrServicio": int_val(row.get("vrServicio")),
+                    "conceptoRecaudo": concepto,
+                    "valorPagoModerador": int_val(row.get("valorPagoModerador")),
+                    "numFEVPagoModerador": str_val(row.get("numFEVPagoModerador")),
+                    "codigoVIDA": str_val(row.get("codigoVIDA")),
+                    "codDiagnosticoPrincipalCIE11": str_val(row.get("codDiagnosticoPrincipalCIE11")),
+                    "nomCodDiagnosticoPrincipalCIE11": str_val(row.get("nomCodDiagnosticoPrincipalCIE11")),
+                    "codDiagnosticoRelacionado1CIE11": str_val(first_val(row.get("codDiagnosticoRelacionado1CIE11"), row.get("codDiagnosticoRelacionadoE1CIE11"))),
+                    "nomCodDiagnosticoRelacionado1CIE11": str_val(first_val(row.get("nomCodDiagnosticoRelacionado1CIE11"), row.get("nomCodDiagnosticoRelacionadoE1CIE11"))),
+                    "codDiagnosticoRelacionado2CIE11": str_val(first_val(row.get("codDiagnosticoRelacionado2CIE11"), row.get("codDiagnosticoRelacionadoE2CIE11"))),
+                    "nomCodDiagnosticoRelacionado2CIE11": str_val(first_val(row.get("nomCodDiagnosticoRelacionado2CIE11"), row.get("nomCodDiagnosticoRelacionadoE2CIE11"))),
+                    "codDiagnosticoRelacionado3CIE11": str_val(first_val(row.get("codDiagnosticoRelacionado3CIE11"), row.get("codDiagnosticoRelacionadoE3CIE11"))),
+                    "nomCodDiagnosticoRelacionado3CIE11": str_val(first_val(row.get("nomCodDiagnosticoRelacionado3CIE11"), row.get("nomCodDiagnosticoRelacionadoE3CIE11"))),
+                }
+            elif tipo_serv == "procedimientos":
+                fin = str_val(row.get("finalidadTecnologiaSalud"))
+                if fin and len(fin) == 1: fin = "0" + fin
+                concepto = str_val(row.get("conceptoRecaudo"))
+                if concepto and len(concepto) == 1: concepto = "0" + concepto
+                via = str_val(row.get("viaIngresoServicioSalud"))
+                if via and len(via) == 1: via = "0" + via
+                
+                s_obj = {
+                    "codPrestador": str_val(row.get("codPrestador")),
+                    "fechaInicioAtencion": datetime_val(row.get("fechaInicioAtencion")),
+                    "idMIPRES": str_val(row.get("idMIPRES")),
+                    "numAutorizacion": str_val(row.get("numAutorizacion")),
+                    "codProcedimiento": str_val(row.get("codProcedimiento")),
+                    "viaIngresoServicioSalud": via,
+                    "modalidadGrupoServicioTecSal": str_val(row.get("modalidadGrupoServicioTecSal")),
+                    "grupoServicios": str_val(row.get("grupoServicios")),
+                    "codServicio": int_val(row.get("codServicio")),
+                    "finalidadTecnologiaSalud": fin,
+                    "tipoDocumentoIdentificacion": str_val(row.get("tipoDocumentoIdentificacion_profesional")),
+                    "numDocumentoIdentificacion": str_val(row.get("numDocumentoIdentificacion_profesional")),
+                    "codDiagnosticoPrincipal": str_val(row.get("codDiagnosticoPrincipal")),
+                    "codDiagnosticoRelacionado": str_val(row.get("codDiagnosticoRelacionado")),
+                    "codComplicacion": str_val(row.get("codComplicacion")),
+                    "vrServicio": int_val(row.get("vrServicio")),
+                    "conceptoRecaudo": concepto,
+                    "valorPagoModerador": int_val(row.get("valorPagoModerador")),
+                    "numFEVPagoModerador": str_val(row.get("numFEVPagoModerador")),
+                    "codigoVIDA": str_val(row.get("codigoVIDA")),
+                    "codDiagnosticoPrincipalCIE11": str_val(row.get("codDiagnosticoPrincipalCIE11")),
+                    "nomCodDiagnosticoPrincipalCIE11": str_val(row.get("nomCodDiagnosticoPrincipalCIE11")),
+                    "codDiagnosticoRelacionadoCIE11": str_val(row.get("codDiagnosticoRelacionadoCIE11")),
+                    "nomCodDiagnosticoRelacionadoCIE11": str_val(row.get("nomCodDiagnosticoRelacionadoCIE11")),
+                    "codComplicacionCIE11": str_val(row.get("codComplicacionCIE11")),
+                    "nomCodComplicacionCIE11": str_val(row.get("nomCodComplicacionCIE11")),
+                }
+            elif tipo_serv == "urgencias":
+                causa = str_val(row.get("causaMotivoAtencion"))
+                if causa and len(causa) == 1: causa = "0" + causa
+                dest = str_val(row.get("condicionDestinoUsuarioEgreso"))
+                if dest and len(dest) == 1: dest = "0" + dest
+                
+                s_obj = {
+                    "codPrestador": str_val(row.get("codPrestador")),
+                    "fechaInicioAtencion": datetime_val(row.get("fechaInicioAtencion")),
+                    "numAutorizacion": str_val(row.get("numAutorizacion")),
+                    "causaMotivoAtencion": causa,
+                    "codDiagnosticoPrincipal": str_val(row.get("codDiagnosticoPrincipal")),
+                    "codDiagnosticoPrincipalE": str_val(row.get("codDiagnosticoPrincipalE")),
+                    "codDiagnosticoRelacionadoE1": str_val(first_val(row.get("codDiagnosticoRelacionadoE1"), row.get("codDiagnosticoRelacionado1"))),
+                    "codDiagnosticoRelacionadoE2": str_val(first_val(row.get("codDiagnosticoRelacionadoE2"), row.get("codDiagnosticoRelacionado2"))),
+                    "codDiagnosticoRelacionadoE3": str_val(first_val(row.get("codDiagnosticoRelacionadoE3"), row.get("codDiagnosticoRelacionado3"))),
+                    "condicionDestinoUsuarioEgreso": dest,
+                    "codDiagnosticoCausaMuerte": str_val(row.get("codDiagnosticoCausaMuerte")),
+                    "fechaEgreso": datetime_val(row.get("fechaEgreso")),
+                    "codigoVIDA": str_val(row.get("codigoVIDA")),
+                    "codDiagnosticoPrincipalCIE11": str_val(row.get("codDiagnosticoPrincipalCIE11")),
+                    "nomCodDiagnosticoPrincipalCIE11": str_val(row.get("nomCodDiagnosticoPrincipalCIE11")),
+                    "codDiagnosticoPrincipalECIE11": str_val(row.get("codDiagnosticoPrincipalECIE11")),
+                    "nomCodDiagnosticoPrincipalECIE11": str_val(row.get("nomCodDiagnosticoPrincipalECIE11")),
+                    "codDiagnosticoRelacionadoE1CIE11": str_val(row.get("codDiagnosticoRelacionadoE1CIE11")),
+                    "nomCodDiagnosticoRelacionadoE1CIE11": str_val(row.get("nomCodDiagnosticoRelacionadoE1CIE11")),
+                    "codDiagnosticoRelacionadoE2CIE11": str_val(row.get("codDiagnosticoRelacionadoE2CIE11")),
+                    "nomCodDiagnosticoRelacionadoE2CIE11": str_val(row.get("nomCodDiagnosticoRelacionadoE2CIE11")),
+                    "codDiagnosticoRelacionadoE3CIE11": str_val(row.get("codDiagnosticoRelacionadoE3CIE11")),
+                    "nomCodDiagnosticoRelacionadoE3CIE11": str_val(row.get("nomCodDiagnosticoRelacionadoE3CIE11")),
+                    "codComplicacionCIE11": str_val(row.get("codComplicacionCIE11")),
+                    "nomCodComplicacionCIE11": str_val(row.get("nomCodComplicacionCIE11")),
+                    "codDiagnosticoCausaMuerteCIE11": str_val(row.get("codDiagnosticoCausaMuerteCIE11")),
+                    "nomCodDiagnosticoCausaMuerteCIE11": str_val(row.get("nomCodDiagnosticoCausaMuerteCIE11")),
+                }
+            elif tipo_serv == "hospitalizacion":
+                via = str_val(row.get("viaIngresoServicioSalud"))
+                if via and len(via) == 1: via = "0" + via
+                causa = str_val(row.get("causaMotivoAtencion"))
+                if causa and len(causa) == 1: causa = "0" + causa
+                dest = str_val(row.get("condicionDestinoUsuarioEgreso"))
+                if dest and len(dest) == 1: dest = "0" + dest
+                
+                s_obj = {
+                    "codPrestador": str_val(row.get("codPrestador")),
+                    "viaIngresoServicioSalud": via,
+                    "fechaInicioAtencion": datetime_val(row.get("fechaInicioAtencion")),
+                    "numAutorizacion": str_val(row.get("numAutorizacion")),
+                    "codigoVIDA": str_val(row.get("codigoVIDA")),
+                    "causaMotivoAtencion": causa,
+                    "codDiagnosticoPrincipal": str_val(row.get("codDiagnosticoPrincipal")),
+                    "codDiagnosticoPrincipalE": str_val(row.get("codDiagnosticoPrincipalE")),
+                    "codDiagnosticoRelacionadoE1": str_val(first_val(row.get("codDiagnosticoRelacionadoE1"), row.get("codDiagnosticoRelacionado1"))),
+                    "codDiagnosticoRelacionadoE2": str_val(first_val(row.get("codDiagnosticoRelacionadoE2"), row.get("codDiagnosticoRelacionado2"))),
+                    "codDiagnosticoRelacionadoE3": str_val(first_val(row.get("codDiagnosticoRelacionadoE3"), row.get("codDiagnosticoRelacionado3"))),
+                    "codDiagnosticoPrincipalCIE11": str_val(row.get("codDiagnosticoPrincipalCIE11")),
+                    "nomCodDiagnosticoPrincipalCIE11": str_val(row.get("nomCodDiagnosticoPrincipalCIE11")),
+                    "codDiagnosticoPrincipalECIE11": str_val(row.get("codDiagnosticoPrincipalECIE11")),
+                    "nomCodDiagnosticoPrincipalECIE11": str_val(row.get("nomCodDiagnosticoPrincipalECIE11")),
+                    "codDiagnosticoRelacionadoE1CIE11": str_val(row.get("codDiagnosticoRelacionadoE1CIE11")),
+                    "nomCodDiagnosticoRelacionadoE1CIE11": str_val(row.get("nomCodDiagnosticoRelacionadoE1CIE11")),
+                    "codDiagnosticoRelacionadoE2CIE11": str_val(row.get("codDiagnosticoRelacionadoE2CIE11")),
+                    "nomCodDiagnosticoRelacionadoE2CIE11": str_val(row.get("nomCodDiagnosticoRelacionadoE2CIE11")),
+                    "codDiagnosticoRelacionadoE3CIE11": str_val(row.get("codDiagnosticoRelacionadoE3CIE11")),
+                    "nomCodDiagnosticoRelacionadoE3CIE11": str_val(row.get("nomCodDiagnosticoRelacionadoE3CIE11")),
+                    "codComplicacionCIE11": str_val(row.get("codComplicacionCIE11")),
+                    "nomCodComplicacionCIE11": str_val(row.get("nomCodComplicacionCIE11")),
+                    "codDiagnosticoCausaMuerteCIE11": str_val(row.get("codDiagnosticoCausaMuerteCIE11")),
+                    "nomCodDiagnosticoCausaMuerteCIE11": str_val(row.get("nomCodDiagnosticoCausaMuerteCIE11")),
+                    "codComplicacion": str_val(row.get("codComplicacion")),
+                    "condicionDestinoUsuarioEgreso": dest,
+                    "codDiagnosticoCausaMuerte": str_val(row.get("codDiagnosticoCausaMuerte")),
+                    "fechaEgreso": datetime_val(row.get("fechaEgreso")),
+                }
+            elif tipo_serv == "recienNacidos":
+                dest = str_val(first_val(row.get("condicionDestinoUsuarioEgresoRN"), row.get("condicionDestinoUsuarioEgreso")))
+                if dest and len(dest) == 1: dest = "0" + dest
+                
+                s_obj = {
+                    "codPrestador": str_val(row.get("codPrestador")),
+                    "tipoDocumentoIdentificacion": str_val(row.get("tipoDocumentoIdentificacionRN")),
+                    "numDocumentoIdentificacion": str_val(row.get("numDocumentoIdentificacionRN")),
+                    "fechaNacimiento": datetime_val(row.get("fechaNacimientoRN")),
+                    "edadGestacional": int_val(row.get("edadGestacional")),
+                    "numConsultasCPrenatal": int_val(row.get("numConsultasCPrenatal")),
+                    "codSexoBiologico": str_val(row.get("codSexoBiologico")),
+                    "peso": int_val(row.get("peso")),
+                    "codDiagnosticoPrincipal": str_val(first_val(row.get("codDiagnosticoPrincipalRN"), row.get("codDiagnosticoPrincipal"))),
+                    "condicionDestinoUsuarioEgreso": dest,
+                    "codDiagnosticoCausaMuerte": str_val(first_val(row.get("codDiagnosticoCausaMuerteRN"), row.get("codDiagnosticoCausaMuerte"))),
+                    "fechaEgreso": datetime_val(first_val(row.get("fechaEgresoRN"), row.get("fechaEgreso"))),
+                    "codigoVIDA": str_val(row.get("codigoVIDA")),
+                    "codDiagnosticoPrincipalCIE11": str_val(row.get("codDiagnosticoPrincipalCIE11")),
+                    "nomCodDiagnosticoPrincipalCIE11": str_val(row.get("nomCodDiagnosticoPrincipalCIE11")),
+                    "codDiagnosticoCausaMuerteCIE11": str_val(row.get("codDiagnosticoCausaMuerteCIE11")),
+                    "nomCodDiagnosticoCausaMuerteCIE11": str_val(row.get("nomCodDiagnosticoCausaMuerteCIE11")),
+                }
+            elif tipo_serv == "medicamentos":
+                concepto = str_val(row.get("conceptoRecaudo"))
+                if concepto and len(concepto) == 1: concepto = "0" + concepto
+                tmed = str_val(row.get("tipoMedicamento"))
+                if tmed and len(tmed) == 1: tmed = "0" + tmed
+                
+                s_obj = {
+                    "codPrestador": str_val(row.get("codPrestador")),
+                    "numAutorizacion": str_val(row.get("numAutorizacion")),
+                    "idMIPRES": str_val(row.get("idMIPRES")),
+                    "fechaDispensAdmon": datetime_val(row.get("fechaDispensAdmon")),
+                    "codDiagnosticoPrincipal": str_val(row.get("codDiagnosticoPrincipal")),
+                    "codDiagnosticoRelacionado": str_val(row.get("codDiagnosticoRelacionado")),
+                    "tipoMedicamento": tmed,
+                    "codTecnologiaSalud": str_val(row.get("codTecnologiaSalud")),
+                    "nomTecnologiaSalud": str_val(row.get("nomTecnologiaSalud")),
+                    "concentracionMedicamento": str_val(row.get("concentracionMedicamento")),
+                    "unidadMedida": str_val(row.get("unidadMedida")),
+                    "formaFarmaceutica": str_val(row.get("formaFarmaceutica")),
+                    "unidadMinDispensa": int_val(row.get("unidadMinDispensa")) or 1,
+                    "cantidadMedicamento": int_val(row.get("cantidadMedicamento")),
+                    "diasTratamiento": int_val(row.get("diasTratamiento")),
+                    "tipoDocumentoIdentificacion": str_val(row.get("tipoDocumentoIdentificacion_profesional")),
+                    "numDocumentoIdentificacion": str_val(row.get("numDocumentoIdentificacion_profesional")),
+                    "vrUnitMedicamento": int_val(row.get("vrUnitMedicamento")),
+                    "vrServicio": int_val(row.get("vrServicio")),
+                    "conceptoRecaudo": concepto,
+                    "valorPagoModerador": int_val(row.get("valorPagoModerador")),
+                    "numFEVPagoModerador": str_val(row.get("numFEVPagoModerador")),
+                    "codigoVIDA": str_val(row.get("codigoVIDA")),
+                }
+            elif tipo_serv == "otrosServicios":
+                concepto = str_val(row.get("conceptoRecaudo"))
+                if concepto and len(concepto) == 1: concepto = "0" + concepto
+                tos = str_val(row.get("tipoOS"))
+                if tos and len(tos) == 1: tos = "0" + tos
+                
+                s_obj = {
+                    "codPrestador": str_val(row.get("codPrestador")),
+                    "numAutorizacion": str_val(row.get("numAutorizacion")),
+                    "codigoVIDA": str_val(row.get("codigoVIDA")),
+                    "idMIPRES": str_val(row.get("idMIPRES")),
+                    "fechaSuministroTecnologia": datetime_val(row.get("fechaSuministroTecnologia")),
+                    "tipoOS": tos,
+                    "codTecnologiaSalud": str_val(row.get("codTecnologiaSalud")),
+                    "nomTecnologiaSalud": str_val(row.get("nomTecnologiaSalud")),
+                    "cantidadOS": int_val(row.get("cantidadOS")),
+                    "tipoDocumentoIdentificacion": str_val(row.get("tipoDocumentoIdentificacion_profesional")),
+                    "numDocumentoIdentificacion": str_val(row.get("numDocumentoIdentificacion_profesional")),
+                    "vrUnitOS": int_val(row.get("vrUnitOS")),
+                    "vrServicio": int_val(row.get("vrServicio")),
+                    "conceptoRecaudo": concepto,
+                    "valorPagoModerador": int_val(row.get("valorPagoModerador")),
+                    "numFEVPagoModerador": str_val(row.get("numFEVPagoModerador")),
+                }
+                
+            if s_obj:
+                # Las estancias tipoOS 03 representan días de internación.
+                # Si cantidadOS es mayor que 1, se genera un registro por cada día.
+                if tipo_serv == "otrosServicios" and s_obj.get("tipoOS") == "03":
+                    cantidad_dias = s_obj.get("cantidadOS") or 1
+                    try:
+                        cantidad_dias = max(1, int(cantidad_dias))
+                    except (TypeError, ValueError):
+                        cantidad_dias = 1
+
+                    if cantidad_dias > 1:
+                        fecha_base = s_obj.get("fechaSuministroTecnologia")
+                        if not fecha_base:
+                            hospitalizaciones = user_obj["servicios"].get(
+                                "hospitalizacion", []
+                            )
+                            if hospitalizaciones:
+                                fecha_base = hospitalizaciones[0].get(
+                                    "fechaInicioAtencion"
+                                )
+
+                        try:
+                            fecha_base_dt = pd.to_datetime(
+                                fecha_base, errors="raise"
+                            )
+                        except Exception:
+                            fecha_base_dt = None
+
+                        vr_unitario = s_obj.get("vrUnitOS")
+                        vr_total = s_obj.get("vrServicio")
+                        if vr_unitario is None and vr_total is not None:
+                            try:
+                                vr_unitario = round(
+                                    int(vr_total) / cantidad_dias
+                                )
+                            except Exception:
+                                vr_unitario = vr_total
+
+                        for dia in range(cantidad_dias):
+                            diario = dict(s_obj)
+                            diario["cantidadOS"] = 1
+                            diario["vrUnitOS"] = vr_unitario
+                            diario["vrServicio"] = vr_unitario
+                            if fecha_base_dt is not None:
+                                diario["fechaSuministroTecnologia"] = (
+                                    fecha_base_dt + pd.Timedelta(days=dia)
+                                ).strftime("%Y-%m-%d %H:%M")
+                            diario["consecutivo"] = (
+                                len(user_obj["servicios"][tipo_serv]) + 1
+                            )
+                            user_obj["servicios"][tipo_serv].append(diario)
+                    else:
+                        s_obj["consecutivo"] = (
+                            len(user_obj["servicios"][tipo_serv]) + 1
+                        )
+                        user_obj["servicios"][tipo_serv].append(s_obj)
+                else:
+                    s_obj["consecutivo"] = (
+                        len(user_obj["servicios"][tipo_serv]) + 1
+                    )
+                    user_obj["servicios"][tipo_serv].append(s_obj)
+
+        for fact_num, f_data in facturas.items():
+            for indice_usuario, u in enumerate(
+                f_data["usuarios"], start=1
+            ):
+                # Cuando la plantilla ya trae una fila por cada día pero todas
+                # tienen la misma fecha, distribuirlas desde el ingreso.
+                otros = u["servicios"].get("otrosServicios", [])
+                hospitalizaciones = u["servicios"].get(
+                    "hospitalizacion", []
+                )
+                fecha_ingreso = None
+                if hospitalizaciones:
+                    fecha_ingreso = hospitalizaciones[0].get(
+                        "fechaInicioAtencion"
+                    )
+
+                # Si existen varios registros en otrosServicios y todos traen
+                # la misma fecha, cada registro representa un día distinto de
+                # atención. Se asignan fechas consecutivas según el orden del
+                # servicio, empezando desde la fecha de ingreso del paciente.
+                if len(otros) > 1:
+                    fechas_otros = {
+                        servicio.get("fechaSuministroTecnologia")
+                        for servicio in otros
+                        if servicio.get("fechaSuministroTecnologia")
+                    }
+
+                    if len(fechas_otros) <= 1:
+                        fecha_base = fecha_ingreso or next(
+                            iter(fechas_otros), None
+                        )
+                        try:
+                            fecha_base_dt = pd.to_datetime(
+                                fecha_base, errors="raise"
+                            )
+                        except Exception:
+                            fecha_base_dt = None
+
+                        if fecha_base_dt is not None:
+                            for dia, servicio in enumerate(otros):
+                                servicio["fechaSuministroTecnologia"] = (
+                                    fecha_base_dt + pd.Timedelta(days=dia)
+                                ).strftime("%Y-%m-%d %H:%M")
+
+                servicios_filtrados = {}
+                for s_type, s_list in u["servicios"].items():
+                    if not s_list:
+                        continue
+                    for numero, servicio in enumerate(s_list, start=1):
+                        servicio["consecutivo"] = numero
+                    servicios_filtrados[s_type] = s_list
+
+                # Mantener el consecutivo del usuario antes de servicios.
+                usuario_ordenado = {
+                    "tipoDocumentoIdentificacion": u.get(
+                        "tipoDocumentoIdentificacion"
+                    ),
+                    "numDocumentoIdentificacion": u.get(
+                        "numDocumentoIdentificacion"
+                    ),
+                    "tipoUsuario": u.get("tipoUsuario"),
+                    "fechaNacimiento": u.get("fechaNacimiento"),
+                    "codSexo": u.get("codSexo"),
+                    "codPaisResidencia": u.get("codPaisResidencia"),
+                    "codMunicipioResidencia": u.get(
+                        "codMunicipioResidencia"
+                    ),
+                    "codZonaTerritorialResidencia": u.get(
+                        "codZonaTerritorialResidencia"
+                    ),
+                    "incapacidad": u.get("incapacidad"),
+                    "codPaisOrigen": u.get("codPaisOrigen"),
+                    "registroSIRAS": u.get("registroSIRAS"),
+                    "servicios": servicios_filtrados,
+                }
+                f_data["usuarios"][indice_usuario - 1] = usuario_ordenado
+
+        return facturas
