@@ -350,87 +350,207 @@ def _aplicar_config_sobrescribir(source_root, target_root, cambios: List[str]) -
 # Modalidad de pago
 # ---------------------------------------------------------------------------
 
-MODALIDAD_PAGO_PREDETERMINADA = "Pago por evento"
+MODALIDAD_PAGO_PREDETERMINADA = "Por evento"
+MODALIDAD_PAGO_SCHEME_ID = "04"
+MODALIDAD_PAGO_SCHEME_NAME = "salud_modalidad_pago.gc"
+
+COBERTURAS_POR_TIPO_USUARIO = {
+    "CONTRIBUTIVO": (
+        "Plan UPC — Régimen Contributivo",
+        "16",
+    ),
+    "SUBSIDIADO": (
+        "Plan UPC — Régimen Subsidiado",
+        "17",
+    ),
+}
 
 
-def _aplicar_modalidad_pago_evento(target_inv, cambios: List[str]) -> None:
-    """Crea o corrige MODALIDAD_PAGO con el valor 'Pago por evento'.
-
-    La extensión de salud representa los campos mediante elementos
-    AdditionalInformation con hijos Name y Value. Para conservar namespaces y
-    atributos propios del XML, cuando falta el grupo se clona la estructura de
-    otro AdditionalInformation existente.
-    """
-    adicionales = [
-        el for el in target_inv.iter()
-        if isinstance(el.tag, str) and _local(el.tag) == "AdditionalInformation"
-    ]
-
-    referencia = None
-    modalidad = None
-
-    for ai in adicionales:
+def _leer_additional_information(target_inv, nombre: str):
+    """Busca un AdditionalInformation por el contenido exacto de Name."""
+    nombre = nombre.strip().upper()
+    for ai in target_inv.iter():
+        if not isinstance(ai.tag, str) or _local(ai.tag) != "AdditionalInformation":
+            continue
         name_el = next(
-            (c for c in ai if isinstance(c.tag, str) and _local(c.tag) == "Name"),
+            (
+                c for c in ai
+                if isinstance(c.tag, str) and _local(c.tag) == "Name"
+            ),
             None,
         )
-        value_el = next(
-            (c for c in ai if isinstance(c.tag, str) and _local(c.tag) == "Value"),
-            None,
-        )
+        if name_el is None:
+            continue
+        if (name_el.text or "").strip().upper() == nombre:
+            value_el = next(
+                (
+                    c for c in ai
+                    if isinstance(c.tag, str) and _local(c.tag) == "Value"
+                ),
+                None,
+            )
+            return ai, name_el, value_el
+    return None, None, None
 
-        if referencia is None and name_el is not None:
-            referencia = ai
 
-        if (
-            name_el is not None
-            and (name_el.text or "").strip().upper() == "MODALIDAD_PAGO"
-        ):
-            modalidad = ai
-            if value_el is None:
-                value_el = etree.SubElement(ai, _tag_como_hijo(ai, "Value"))
-
-            valor_anterior = (value_el.text or "").strip()
-            if valor_anterior != MODALIDAD_PAGO_PREDETERMINADA:
-                value_el.text = MODALIDAD_PAGO_PREDETERMINADA
-                cambios.append(
-                    "MODALIDAD_PAGO corregida "
-                    f"({valor_anterior!r} -> {MODALIDAD_PAGO_PREDETERMINADA!r})"
-                )
-            return
-
-    if referencia is None:
-        cambios.append(
-            "⚠️ No se pudo crear MODALIDAD_PAGO: "
-            "no existe un AdditionalInformation de referencia"
-        )
-        return
+def _crear_additional_information(target_inv, nombre: str):
+    """Crea un AdditionalInformation clonando la estructura de uno existente."""
+    referencia = next(
+        (
+            el for el in target_inv.iter()
+            if isinstance(el.tag, str)
+            and _local(el.tag) == "AdditionalInformation"
+        ),
+        None,
+    )
+    if referencia is None or referencia.getparent() is None:
+        return None, None, None
 
     nuevo = copy.deepcopy(referencia)
     for child in list(nuevo):
         nuevo.remove(child)
 
     name_ref = next(
-        (c for c in referencia if isinstance(c.tag, str) and _local(c.tag) == "Name"),
+        (
+            c for c in referencia
+            if isinstance(c.tag, str) and _local(c.tag) == "Name"
+        ),
         None,
     )
     value_ref = next(
-        (c for c in referencia if isinstance(c.tag, str) and _local(c.tag) == "Value"),
+        (
+            c for c in referencia
+            if isinstance(c.tag, str) and _local(c.tag) == "Value"
+        ),
         None,
     )
 
-    name_tag = name_ref.tag if name_ref is not None else _tag_como_hijo(nuevo, "Name")
-    value_tag = value_ref.tag if value_ref is not None else _tag_como_hijo(nuevo, "Value")
+    name_tag = (
+        name_ref.tag
+        if name_ref is not None
+        else _tag_como_hijo(nuevo, "Name")
+    )
+    value_tag = (
+        value_ref.tag
+        if value_ref is not None
+        else _tag_como_hijo(nuevo, "Value")
+    )
 
     name_el = etree.SubElement(nuevo, name_tag)
-    name_el.text = "MODALIDAD_PAGO"
+    name_el.text = nombre
     value_el = etree.SubElement(nuevo, value_tag)
-    value_el.text = MODALIDAD_PAGO_PREDETERMINADA
 
     padre = referencia.getparent()
-    posicion = padre.index(referencia) + 1
-    padre.insert(posicion, nuevo)
-    cambios.append("Insertado MODALIDAD_PAGO='Pago por evento'")
+    padre.insert(padre.index(referencia) + 1, nuevo)
+    return nuevo, name_el, value_el
+
+
+def _asegurar_grupo(target_inv, nombre: str):
+    ai, name_el, value_el = _leer_additional_information(
+        target_inv,
+        nombre,
+    )
+    if ai is None:
+        ai, name_el, value_el = _crear_additional_information(
+            target_inv,
+            nombre,
+        )
+    elif value_el is None:
+        value_el = etree.SubElement(
+            ai,
+            _tag_como_hijo(ai, "Value"),
+        )
+    return ai, name_el, value_el
+
+
+def _aplicar_modalidad_y_cobertura(target_inv, cambios: List[str]) -> None:
+    """Corrige modalidad de pago y cobertura con los códigos SISPRO.
+
+    La clínica factura por evento:
+      MODALIDAD_PAGO = Por evento
+      schemeID = 04
+      schemeName = salud_modalidad_pago.gc
+
+    La cobertura se determina a partir de TIPO_USUARIO para evitar que un
+    usuario subsidiado quede reportado como plan complementario.
+    """
+    _, _, modalidad_value = _asegurar_grupo(
+        target_inv,
+        "MODALIDAD_PAGO",
+    )
+    if modalidad_value is None:
+        cambios.append("⚠️ No se pudo crear MODALIDAD_PAGO")
+        return
+
+    anterior = (modalidad_value.text or "").strip()
+    attrs_anteriores = dict(modalidad_value.attrib)
+
+    modalidad_value.text = MODALIDAD_PAGO_PREDETERMINADA
+    modalidad_value.set("schemeID", MODALIDAD_PAGO_SCHEME_ID)
+    modalidad_value.set(
+        "schemeName",
+        MODALIDAD_PAGO_SCHEME_NAME,
+    )
+
+    if (
+        anterior != MODALIDAD_PAGO_PREDETERMINADA
+        or attrs_anteriores.get("schemeID") != MODALIDAD_PAGO_SCHEME_ID
+        or attrs_anteriores.get("schemeName") != MODALIDAD_PAGO_SCHEME_NAME
+    ):
+        cambios.append(
+            "MODALIDAD_PAGO corregida a "
+            "'Por evento' (schemeID=04)"
+        )
+
+    _, _, tipo_usuario_value = _leer_additional_information(
+        target_inv,
+        "TIPO_USUARIO",
+    )
+    tipo_usuario = (
+        (tipo_usuario_value.text or "").strip().upper()
+        if tipo_usuario_value is not None
+        else ""
+    )
+
+    cobertura = None
+    for clave, datos in COBERTURAS_POR_TIPO_USUARIO.items():
+        if clave in tipo_usuario:
+            cobertura = datos
+            break
+
+    if cobertura is None:
+        cambios.append(
+            "⚠️ No se ajustó COBERTURA_PLAN_BENEFICIOS porque "
+            "TIPO_USUARIO no indica Contributivo o Subsidiado"
+        )
+        return
+
+    cobertura_texto, cobertura_id = cobertura
+    _, _, cobertura_value = _asegurar_grupo(
+        target_inv,
+        "COBERTURA_PLAN_BENEFICIOS",
+    )
+    if cobertura_value is None:
+        cambios.append(
+            "⚠️ No se pudo crear COBERTURA_PLAN_BENEFICIOS"
+        )
+        return
+
+    cobertura_anterior = (cobertura_value.text or "").strip()
+    cobertura_id_anterior = cobertura_value.get("schemeID")
+
+    cobertura_value.text = cobertura_texto
+    cobertura_value.set("schemeID", cobertura_id)
+    cobertura_value.set("schemeName", "salud_cobertura.gc")
+
+    if (
+        cobertura_anterior != cobertura_texto
+        or cobertura_id_anterior != cobertura_id
+    ):
+        cambios.append(
+            "COBERTURA_PLAN_BENEFICIOS corregida a "
+            f"'{cobertura_texto}' (schemeID={cobertura_id})"
+        )
 
 
 def _tag_como_hijo(parent, local_name: str) -> str:
@@ -545,7 +665,7 @@ def corregir_xml(xml_bytes: bytes, plantilla_bytes: bytes, cucon: str,
         _aplicar_config_sobrescribir(plantilla_inv, target_inv, res.cambios)
 
         # 6) Modalidad de pago obligatoria para la clínica
-        _aplicar_modalidad_pago_evento(target_inv, res.cambios)
+        _aplicar_modalidad_y_cobertura(target_inv, res.cambios)
 
         # 7) CUCON dentro de la factura embebida
         if cucon and cucon.strip():
