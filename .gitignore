@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Entornos virtuales
+venv/
+env/
+.env/
+.venv/
+
+# Streamlit
+.streamlit/
+
+# Archivos de prueba / trabajo local (no van al repo)
+_rep*.txt
+pdf_extracted_*.txt
+pdf_search_results.txt
+
+# Datos sensibles / ejemplos locales
+Sola*.csv
+*.csv
+
+# Archivos RIPS de prueba
+AD005436.txt
+AF005436.txt
+AH005436.txt
+AT005436.txt
+CT005436.txt
+US005436.txt
+RIP ejemplo/
+RIP ejemplo.zip
+
+# XML de prueba
+Xml de factura con los campos prueba.xml
+Xml de factura corregida.xml
+Xml de factura incompleta.xml
+
+# PDFs de resoluciones (demasiado grandes)
+*.pdf
+
+# Archivos de herramientas externas
+.openclaude/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
