@@ -536,7 +536,10 @@ class CreadorJsonRips:
             via = parts[4].strip()
             if len(via) == 1: via = f"0{via}"
             causa = parts[8].strip()
-            if len(causa) == 1: causa = f"0{causa}"
+            if causa in ("13", "013", ""):
+                causa = "38"
+            elif len(causa) == 1:
+                causa = f"0{causa}"
             dest = parts[15].strip()
             if len(dest) == 1: dest = f"0{dest}"
             
@@ -792,6 +795,16 @@ class CreadorJsonRips:
             fact_info["usuarios"] = usuarios_factura
             del fact_info["usuarios_ids"]
             del fact_info["fechaFactura"]
+
+        for factura in facturas.values():
+            for usuario in factura.get("usuarios", []):
+                for hospitalizacion in usuario.get(
+                    "servicios", {}
+                ).get("hospitalizacion", []):
+                    if str(
+                        hospitalizacion.get("causaMotivoAtencion", "")
+                    ).strip() in ("13", "013", ""):
+                        hospitalizacion["causaMotivoAtencion"] = "38"
 
         return facturas
 
