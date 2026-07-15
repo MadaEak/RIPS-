@@ -53,3 +53,11 @@ Xml de factura incompleta.xml
 .idea/
 *.swp
 *.swo
+
+# Archivos de prueba y ejemplos
+FE000002.json
+json ejemplo.json
+test_salida.xml
+
+# Plantillas Excel
+Plantilla_RIPS_948_con_bloqueo_*.xlsx
