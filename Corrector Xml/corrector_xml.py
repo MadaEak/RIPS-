@@ -561,6 +561,44 @@ def _tag_como_hijo(parent, local_name: str) -> str:
     return local_name
 
 
+
+# ---------------------------------------------------------------------------
+# Código del prestador
+# ---------------------------------------------------------------------------
+
+CODIGO_PRESTADOR_CEMIC = "1300101145"
+
+
+def _aplicar_codigo_prestador(target_inv, cambios: List[str]) -> None:
+    """Corrige CODIGO_PRESTADOR con el código habilitado para CEMIC."""
+    ai, _, value_el = _leer_additional_information(
+        target_inv,
+        "CODIGO_PRESTADOR",
+    )
+    if ai is None:
+        ai, _, value_el = _crear_additional_information(
+            target_inv,
+            "CODIGO_PRESTADOR",
+        )
+    elif value_el is None:
+        value_el = etree.SubElement(
+            ai,
+            _tag_como_hijo(ai, "Value"),
+        )
+
+    if value_el is None:
+        cambios.append("⚠️ No se pudo crear CODIGO_PRESTADOR")
+        return
+
+    anterior = (value_el.text or "").strip()
+    if anterior != CODIGO_PRESTADOR_CEMIC:
+        value_el.text = CODIGO_PRESTADOR_CEMIC
+        cambios.append(
+            "CODIGO_PRESTADOR corregido "
+            f"({anterior!r} -> {CODIGO_PRESTADOR_CEMIC!r})"
+        )
+
+
 # ---------------------------------------------------------------------------
 # CUCON
 # ---------------------------------------------------------------------------
@@ -666,6 +704,7 @@ def corregir_xml(xml_bytes: bytes, plantilla_bytes: bytes, cucon: str,
 
         # 6) Modalidad de pago obligatoria para la clínica
         _aplicar_modalidad_y_cobertura(target_inv, res.cambios)
+        _aplicar_codigo_prestador(target_inv, res.cambios)
 
         # 7) CUCON dentro de la factura embebida
         if cucon and cucon.strip():
