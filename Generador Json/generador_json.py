@@ -138,6 +138,90 @@ def parsear_lineas_rips(contenido: str) -> List[List[str]]:
         lineas.append(parts)
     return lineas
 
+
+MODALIDAD_PAGO = "Pago por evento"
+
+
+def _ajustar_y_validar_pago_por_evento(factura: Dict[str, Any]) -> None:
+    """Asegura valores monetarios positivos para la modalidad pago por evento.
+
+    Completa vrServicio cuando puede calcularse con cantidad por valor unitario.
+    Si la fuente no trae un valor recuperable, detiene la generación para evitar
+    producir un JSON que será rechazado por el Ministerio.
+    """
+    errores = []
+
+    reglas = {
+        "consultas": (None, None),
+        "procedimientos": (None, None),
+        "medicamentos": ("cantidadMedicamento", "vrUnitMedicamento"),
+        "otrosServicios": ("cantidadOS", "vrUnitOS"),
+    }
+
+    for usuario in factura.get("usuarios", []):
+        documento = usuario.get("numDocumentoIdentificacion", "sin-documento")
+        servicios = usuario.get("servicios", {})
+
+        for tipo, lista in servicios.items():
+            for servicio in lista:
+                if tipo not in reglas:
+                    continue
+
+                cantidad_campo, unitario_campo = reglas[tipo]
+                vr_servicio = servicio.get("vrServicio")
+
+                try:
+                    vr_num = float(vr_servicio or 0)
+                except (TypeError, ValueError):
+                    vr_num = 0
+
+                if vr_num <= 0 and cantidad_campo and unitario_campo:
+                    try:
+                        cantidad = float(servicio.get(cantidad_campo) or 0)
+                        unitario = float(servicio.get(unitario_campo) or 0)
+                        calculado = cantidad * unitario
+                    except (TypeError, ValueError):
+                        calculado = 0
+
+                    if calculado > 0:
+                        servicio["vrServicio"] = (
+                            int(calculado) if calculado.is_integer() else calculado
+                        )
+                        vr_num = calculado
+
+                if vr_num <= 0:
+                    errores.append(
+                        f"{documento}/{tipo}/consecutivo "
+                        f"{servicio.get('consecutivo', '?')}: vrServicio debe ser mayor a 0"
+                    )
+
+                if unitario_campo:
+                    try:
+                        unitario = float(servicio.get(unitario_campo) or 0)
+                    except (TypeError, ValueError):
+                        unitario = 0
+
+                    if unitario <= 0 and vr_num > 0:
+                        try:
+                            cantidad = float(servicio.get(cantidad_campo) or 1)
+                        except (TypeError, ValueError):
+                            cantidad = 1
+                        cantidad = cantidad if cantidad > 0 else 1
+                        calculado_unitario = vr_num / cantidad
+                        servicio[unitario_campo] = (
+                            int(calculado_unitario)
+                            if calculado_unitario.is_integer()
+                            else calculado_unitario
+                        )
+
+    if errores:
+        detalle = "\n- ".join(errores[:20])
+        raise ValueError(
+            "La clínica factura por pago por evento y todos los servicios "
+            "facturables deben tener valores mayores a cero:\n- " + detalle
+        )
+
+
 class CreadorJsonRips:
     def __init__(self):
         self.mapa_afiliados: Dict[str, Dict[str, Any]] = {}
@@ -790,6 +874,8 @@ class CreadorJsonRips:
             del fact_info["usuarios_ids"]
             del fact_info["fechaFactura"]
 
+        for factura in facturas.values():
+            _ajustar_y_validar_pago_por_evento(factura)
         return facturas
 
     def generar_desde_csv(self, csv_bytes: bytes, num_factura: str) -> Dict[str, Any]:
@@ -1100,6 +1186,7 @@ class CreadorJsonRips:
             "usuarios": usuarios_json
         }
         
+        _ajustar_y_validar_pago_por_evento(json_output)
         return json_output
 
     def generar_desde_excel(self, excel_bytes: bytes) -> Dict[str, Dict[str, Any]]:
@@ -1639,4 +1726,6 @@ class CreadorJsonRips:
                 }
                 f_data["usuarios"][indice_usuario - 1] = usuario_ordenado
 
+        for factura in facturas.values():
+            _ajustar_y_validar_pago_por_evento(factura)
         return facturas

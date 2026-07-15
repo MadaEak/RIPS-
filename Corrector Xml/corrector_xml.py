@@ -345,6 +345,102 @@ def _aplicar_config_sobrescribir(source_root, target_root, cambios: List[str]) -
             cambios.append(f"Config emisor insertada: '{ruta}'")
 
 
+
+# ---------------------------------------------------------------------------
+# Modalidad de pago
+# ---------------------------------------------------------------------------
+
+MODALIDAD_PAGO_PREDETERMINADA = "Pago por evento"
+
+
+def _aplicar_modalidad_pago_evento(target_inv, cambios: List[str]) -> None:
+    """Crea o corrige MODALIDAD_PAGO con el valor 'Pago por evento'.
+
+    La extensión de salud representa los campos mediante elementos
+    AdditionalInformation con hijos Name y Value. Para conservar namespaces y
+    atributos propios del XML, cuando falta el grupo se clona la estructura de
+    otro AdditionalInformation existente.
+    """
+    adicionales = [
+        el for el in target_inv.iter()
+        if isinstance(el.tag, str) and _local(el.tag) == "AdditionalInformation"
+    ]
+
+    referencia = None
+    modalidad = None
+
+    for ai in adicionales:
+        name_el = next(
+            (c for c in ai if isinstance(c.tag, str) and _local(c.tag) == "Name"),
+            None,
+        )
+        value_el = next(
+            (c for c in ai if isinstance(c.tag, str) and _local(c.tag) == "Value"),
+            None,
+        )
+
+        if referencia is None and name_el is not None:
+            referencia = ai
+
+        if (
+            name_el is not None
+            and (name_el.text or "").strip().upper() == "MODALIDAD_PAGO"
+        ):
+            modalidad = ai
+            if value_el is None:
+                value_el = etree.SubElement(ai, _tag_como_hijo(ai, "Value"))
+
+            valor_anterior = (value_el.text or "").strip()
+            if valor_anterior != MODALIDAD_PAGO_PREDETERMINADA:
+                value_el.text = MODALIDAD_PAGO_PREDETERMINADA
+                cambios.append(
+                    "MODALIDAD_PAGO corregida "
+                    f"({valor_anterior!r} -> {MODALIDAD_PAGO_PREDETERMINADA!r})"
+                )
+            return
+
+    if referencia is None:
+        cambios.append(
+            "⚠️ No se pudo crear MODALIDAD_PAGO: "
+            "no existe un AdditionalInformation de referencia"
+        )
+        return
+
+    nuevo = copy.deepcopy(referencia)
+    for child in list(nuevo):
+        nuevo.remove(child)
+
+    name_ref = next(
+        (c for c in referencia if isinstance(c.tag, str) and _local(c.tag) == "Name"),
+        None,
+    )
+    value_ref = next(
+        (c for c in referencia if isinstance(c.tag, str) and _local(c.tag) == "Value"),
+        None,
+    )
+
+    name_tag = name_ref.tag if name_ref is not None else _tag_como_hijo(nuevo, "Name")
+    value_tag = value_ref.tag if value_ref is not None else _tag_como_hijo(nuevo, "Value")
+
+    name_el = etree.SubElement(nuevo, name_tag)
+    name_el.text = "MODALIDAD_PAGO"
+    value_el = etree.SubElement(nuevo, value_tag)
+    value_el.text = MODALIDAD_PAGO_PREDETERMINADA
+
+    padre = referencia.getparent()
+    posicion = padre.index(referencia) + 1
+    padre.insert(posicion, nuevo)
+    cambios.append("Insertado MODALIDAD_PAGO='Pago por evento'")
+
+
+def _tag_como_hijo(parent, local_name: str) -> str:
+    """Construye un tag con el mismo namespace del contenedor."""
+    if isinstance(parent.tag, str) and parent.tag.startswith("{"):
+        namespace = parent.tag.split("}", 1)[0][1:]
+        return f"{{{namespace}}}{local_name}"
+    return local_name
+
+
 # ---------------------------------------------------------------------------
 # CUCON
 # ---------------------------------------------------------------------------
@@ -448,7 +544,10 @@ def corregir_xml(xml_bytes: bytes, plantilla_bytes: bytes, cucon: str,
         #     (sobrescribe TaxScheme/ID=01->ZZ, Name=IVA->No aplica)
         _aplicar_config_sobrescribir(plantilla_inv, target_inv, res.cambios)
 
-        # 6) CUCON dentro de la factura embebida
+        # 6) Modalidad de pago obligatoria para la clínica
+        _aplicar_modalidad_pago_evento(target_inv, res.cambios)
+
+        # 7) CUCON dentro de la factura embebida
         if cucon and cucon.strip():
             _aplicar_cucon(target_inv, cucon.strip(), res.cambios)
 
