@@ -308,6 +308,7 @@ class CreadorJsonRips:
                 "incapacidad": "NO",
                 "codPaisOrigen": "170",
                 "registroSIRAS": None,
+                "consecutivo": None,
                 "servicios": {
                     "consultas": [],
                     "procedimientos": [],
@@ -698,6 +699,7 @@ class CreadorJsonRips:
             for u_key in fact_info["usuarios_ids"]:
                 if u_key in mapa_us:
                     user_obj = json.loads(json.dumps(mapa_us[u_key]))
+                    user_obj["consecutivo"] = user_idx
                     user_idx += 1
                     
                     servicios_encontrados = False
@@ -857,6 +859,7 @@ class CreadorJsonRips:
                 "incapacidad": "NO",
                 "codPaisOrigen": "170",
                 "registroSIRAS": None,
+                "consecutivo": user_idx,
                 "servicios": {
                     "consultas": [],
                     "procedimientos": [],
@@ -1631,6 +1634,7 @@ class CreadorJsonRips:
                     "incapacidad": u.get("incapacidad"),
                     "codPaisOrigen": u.get("codPaisOrigen"),
                     "registroSIRAS": u.get("registroSIRAS"),
+                    "consecutivo": indice_usuario,
                     "servicios": servicios_filtrados,
                 }
                 f_data["usuarios"][indice_usuario - 1] = usuario_ordenado
