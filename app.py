@@ -35,7 +35,10 @@ from limpiador_rips import (  # noqa: E402
     cargar_csv_autorizaciones,
     inferir_regimen_zip,
 )
-from corrector_xml import corregir_xml_con_plantilla  # noqa: E402
+from corrector_xml import (  # noqa: E402
+    corregir_xml_con_plantilla,
+    inferir_regimen_desde_csv_mutual,
+)
 from generador_json import CreadorJsonRips, normalizar_factura  # noqa: E402
 
 st.set_page_config(page_title="EPS Mutual - FEV Salud", page_icon="🏥", layout="wide")
@@ -236,7 +239,8 @@ with tab2:
         st.header("⚙️ Configuración (XML)")
         st.markdown(
             "1. Carga uno o varios XML de facturas **incompletas**.\n"
-            "2. Escribe el **CUCON** y procesa.\n\n"
+            "2. Carga el CSV de autorizaciones de Mutual.\n"
+            "3. Escribe el **CUCON** y procesa.\n\n"
             "La plantilla de referencia es **interna** (la usa la herramienta para "
             "saber qué campos completar; tú no la subes)."
         )
@@ -259,6 +263,31 @@ with tab2:
         help="Resolución 0948 de 2026, Art. 11: va en NUMERO_CONTRATO en lugar del nº de contrato.",
     )
 
+    csv_mutual_xml = st.file_uploader(
+        "CSV de autorizaciones de Mutual para detectar el régimen",
+        type=["csv"],
+        key="csv_mutual_corrector_xml",
+        help=(
+            "Se busca cada factura por NUMERO_AUTORIZACION y, como respaldo, "
+            "por C_DOCUMENTO_AFILIADO. ESSC07 = contributivo; "
+            "ESS207 = subsidiado."
+        ),
+    )
+
+    regimen_xml = st.selectbox(
+        "Régimen manual de respaldo",
+        options=[
+            "Detectar automáticamente con CSV",
+            "Contributivo",
+            "Subsidiado",
+        ],
+        index=0,
+        help=(
+            "El modo automático usa el CSV de Mutual. La selección manual "
+            "solo se usa cuando el CSV no encuentra una coincidencia."
+        ),
+    )
+
     if not xmls_subidos:
         st.info("👆 Carga al menos una factura incompleta y escribe el CUCON.")
     else:
@@ -266,10 +295,68 @@ with tab2:
         if st.button("🚀 Corregir XML", type="primary", use_container_width=True):
             resultados = []
             barra = st.progress(0, text="Corrigiendo...")
+            csv_bytes = (
+                csv_mutual_xml.getvalue()
+                if csv_mutual_xml is not None
+                else None
+            )
+
             for i, f in enumerate(xmls_subidos):
-                res = corregir_xml_con_plantilla(f.getvalue(), cucon, f.name)
+                xml_bytes = f.getvalue()
+                regimen_valor = None
+                detalle_regimen = ""
+
+                if regimen_xml == "Detectar automáticamente con CSV":
+                    if csv_bytes is None:
+                        from corrector_xml import ResultadoCorreccion
+                        res = ResultadoCorreccion(nombre=f.name)
+                        res.ok = False
+                        res.mensaje = (
+                            "Cargue el CSV de Mutual o seleccione un régimen "
+                            "manual de respaldo."
+                        )
+                        resultados.append(res)
+                        continue
+
+                    regimen_valor, detalle_regimen = (
+                        inferir_regimen_desde_csv_mutual(
+                            xml_bytes,
+                            csv_bytes,
+                        )
+                    )
+
+                    if regimen_valor is None:
+                        from corrector_xml import ResultadoCorreccion
+                        res = ResultadoCorreccion(nombre=f.name)
+                        res.ok = False
+                        res.mensaje = (
+                            detalle_regimen
+                            + " Seleccione Contributivo o Subsidiado "
+                            "manualmente y procese nuevamente."
+                        )
+                        resultados.append(res)
+                        continue
+                else:
+                    regimen_valor = regimen_xml.lower()
+                    detalle_regimen = (
+                        f"Régimen seleccionado manualmente: {regimen_xml}."
+                    )
+
+                res = corregir_xml_con_plantilla(
+                    xml_bytes,
+                    cucon,
+                    f.name,
+                    regimen=regimen_valor,
+                )
+                if res.ok and detalle_regimen:
+                    res.cambios.insert(0, detalle_regimen)
+
                 resultados.append(res)
-                barra.progress((i + 1) / len(xmls_subidos), text=f"Corregido {f.name}")
+                barra.progress(
+                    (i + 1) / len(xmls_subidos),
+                    text=f"Corregido {f.name}",
+                )
+
             barra.empty()
             st.session_state.resultados_xml = resultados
 
@@ -318,118 +405,77 @@ with tab2:
                 )
 
 # ===========================================================================
-# PESTAÑA 3 — CREADOR DE JSON (Resoluciones 2275 de 2023 y 0948 de 2026)
+# PESTAÑA 3 — CREADOR DE JSON (Resolución 2275 de 2023)
 # ===========================================================================
 with tab3:
-    st.subheader("📝 Creador de JSON RIPS")
+    st.subheader("📝 Creador de JSON RIPS (Resolución 2275 de 2023)")
     st.caption(
-        "Genera archivos JSON RIPS desde ZIP, CSV de Mutual, combinación ZIP + CSV "
-        "o desde la Plantilla Excel RIPS 948."
+        "Genera los archivos JSON exigidos por el Ministerio de Salud a partir de RIPS ZIP planos, "
+        "del CSV de autorizaciones de Mutual, o de ambos combinados."
     )
 
     with st.sidebar:
         st.header("⚙️ Configuración (JSON)")
         st.markdown(
-            "1. Elige el **origen de datos**.\n"
+            "1. Elige el **Origen de datos**.\n"
             "2. Carga los archivos correspondientes.\n"
-            "3. Genera y descarga los JSON individualmente o en ZIP."
+            "3. Opcionalmente, carga el CSV de Mutual para lookups (ej. fecha de nacimiento)."
         )
 
     origen = st.radio(
         "Origen de datos para la generación",
-        options=[
-            "Solo RIPS (ZIP)",
-            "Solo CSV de Mutual",
-            "Ambos (RIPS + CSV de Mutual)",
-            "Plantilla Excel (RIPS 948)",
-        ],
+        options=["Solo RIPS (ZIP)", "Solo CSV de Mutual", "Ambos (RIPS + CSV de Mutual)"],
         index=0,
         help="Elige de qué archivo(s) partir para estructurar el JSON.",
-        horizontal=True,
+        horizontal=True
     )
 
-    csv_file_json = None
-    zip_files_json = None
-    excel_file_json = None
-    num_factura_input = ""
-
+    # Permitir cargar el CSV o ZIP según el origen
     if origen == "Solo CSV de Mutual":
-        st.info(
-            "ℹ️ Se generará un JSON consolidado para el número de factura indicado."
-        )
-        num_factura_input = st.text_input(
-            "Número de factura a asignar",
-            value="FEC39627",
-            help="Por ejemplo: FEC39627",
-        )
-        csv_file_json = st.file_uploader(
-            "Cargar CSV de autorizaciones de Mutual",
-            type=["csv"],
-            key="csv_json_only",
-        )
-
+        st.info("ℹ️ Al usar solo el CSV, generaremos un JSON consolidado para la factura que indiques a continuación.")
+        num_factura_input = st.text_input("Número de factura a asignar", value="FEC39627", help="Por ejemplo, FEC39627")
+        csv_file_json = st.file_uploader("Cargar CSV de autorizaciones de Mutual", type=["csv"], key="csv_json_only")
     elif origen == "Solo RIPS (ZIP)":
-        zip_files_json = st.file_uploader(
-            "Cargar ZIP de RIPS planos",
-            type=["zip"],
-            accept_multiple_files=True,
-            key="zip_json_only",
-        )
+        zip_files_json = st.file_uploader("Cargar ZIP de RIPS planos", type=["zip"], accept_multiple_files=True, key="zip_json_only")
+    else: # Ambos
+        st.markdown("### 1. Cargar CSV de Mutual (Base de datos de afiliados)")
+        csv_file_json = st.file_uploader("Cargar CSV de autorizaciones de Mutual", type=["csv"], key="csv_json_ambos")
+        st.markdown("### 2. Cargar ZIPs de RIPS planos")
+        zip_files_json = st.file_uploader("Cargar ZIP de RIPS planos", type=["zip"], accept_multiple_files=True, key="zip_json_ambos")
 
-    elif origen == "Ambos (RIPS + CSV de Mutual)":
-        st.markdown("### 1. Cargar CSV de Mutual")
-        csv_file_json = st.file_uploader(
-            "Cargar CSV de autorizaciones de Mutual",
-            type=["csv"],
-            key="csv_json_ambos",
-        )
-        st.markdown("### 2. Cargar ZIP de RIPS")
-        zip_files_json = st.file_uploader(
-            "Cargar ZIP de RIPS planos",
-            type=["zip"],
-            accept_multiple_files=True,
-            key="zip_json_ambos",
-        )
-
-    else:
-        st.info(
-            "ℹ️ Carga la plantilla Excel con la hoja **Datos**. "
-            "Se generará un JSON por cada factura encontrada."
-        )
-        excel_file_json = st.file_uploader(
-            "Cargar Plantilla Excel RIPS 948",
-            type=["xlsx"],
-            key="excel_json_rips_948",
-        )
-
-    if st.button(
-        "🚀 Generar JSON RIPS",
-        type="primary",
-        use_container_width=True,
-        key="btn_generar_json_rips",
-    ):
+    if st.button("🚀 Generar JSON RIPS", type="primary", use_container_width=True):
         creador = CreadorJsonRips()
-
+        
+        # 1. Caso Solo CSV de Mutual
         if origen == "Solo CSV de Mutual":
             if not csv_file_json:
                 st.error("Por favor, carga el CSV de Mutual.")
-            elif not num_factura_input.strip():
+            elif not num_factura_input:
                 st.error("Por favor, ingresa el número de factura.")
             else:
                 try:
                     with st.spinner("Generando JSON..."):
                         factura_limpia = normalizar_factura(num_factura_input)
-                        json_res = creador.generar_desde_csv(
-                            csv_file_json.getvalue(),
-                            factura_limpia,
+                        json_res = creador.generar_desde_csv(csv_file_json.getvalue(), factura_limpia)
+                        
+                        st.success(f"✅ JSON generado con éxito para la factura {factura_limpia}.")
+                        
+                        # Mostrar una vista previa del JSON
+                        with st.expander("👁️ Vista previa del JSON generado"):
+                            st.json(json_res)
+                            
+                        # Descargar el JSON
+                        json_str = json.dumps(json_res, indent=2, ensure_ascii=False)
+                        st.download_button(
+                            label=f"⬇️ Descargar {factura_limpia}.json",
+                            data=json_str,
+                            file_name=f"{factura_limpia}.json",
+                            mime="application/json"
                         )
-                    st.session_state.json_rips_resultados = {
-                        factura_limpia: json_res
-                    }
-                    st.session_state.json_rips_origen = origen
                 except Exception as e:
                     st.error(f"Error durante la generación: {e}")
-
+                    
+        # 2. Caso Solo RIPS (ZIP)
         elif origen == "Solo RIPS (ZIP)":
             if not zip_files_json:
                 st.error("Por favor, carga al menos un ZIP de RIPS.")
@@ -437,107 +483,87 @@ with tab3:
                 try:
                     with st.spinner("Generando JSON..."):
                         all_jsons = {}
-                        for archivo in zip_files_json:
-                            all_jsons.update(
-                                creador.generar_desde_zip(archivo.getvalue())
+                        for f in zip_files_json:
+                            res = creador.generar_desde_zip(f.getvalue())
+                            all_jsons.update(res)
+                            
+                        st.success(f"✅ Procesados {len(zip_files_json)} ZIPs. Se generaron {len(all_jsons)} facturas JSON.")
+                        
+                        # Mostrar facturas generadas
+                        for num_fac, json_data in all_jsons.items():
+                            with st.expander(f"Factura {num_fac} (Ver JSON)", expanded=False):
+                                st.json(json_data)
+                                json_str = json.dumps(json_data, indent=2, ensure_ascii=False)
+                                st.download_button(
+                                    label=f"⬇️ Descargar {num_fac}.json",
+                                    data=json_str,
+                                    file_name=f"{num_fac}.json",
+                                    mime="application/json",
+                                    key=f"dl_ind_{num_fac}"
+                                )
+                                
+                        # Descarga masiva ZIP
+                        if len(all_jsons) > 0:
+                            buf = io.BytesIO()
+                            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zout:
+                                for num_fac, json_data in all_jsons.items():
+                                    json_str = json.dumps(json_data, indent=2, ensure_ascii=False)
+                                    zout.writestr(f"{num_fac}.json", json_str)
+                            st.divider()
+                            st.download_button(
+                                label=f"⬇️ Descargar TODOS los JSON (.zip) — {len(all_jsons)}",
+                                data=buf.getvalue(),
+                                file_name="RIPS_JSON_Resolucion2275.zip",
+                                mime="application/zip"
                             )
-                    st.session_state.json_rips_resultados = all_jsons
-                    st.session_state.json_rips_origen = origen
                 except Exception as e:
                     st.error(f"Error durante la generación: {e}")
-
-        elif origen == "Ambos (RIPS + CSV de Mutual)":
-            if not csv_file_json or not zip_files_json:
-                st.error(
-                    "Por favor, carga tanto el CSV como al menos un ZIP de RIPS."
-                )
-            else:
-                try:
-                    with st.spinner("Procesando CSV y ZIP..."):
-                        num_afiliados = creador.cargar_datos_mutual_csv(
-                            csv_file_json.getvalue()
-                        )
-                        all_jsons = {}
-                        for archivo in zip_files_json:
-                            all_jsons.update(
-                                creador.generar_desde_zip(archivo.getvalue())
-                            )
-                    st.info(
-                        f"ℹ️ Se cargaron {num_afiliados} afiliados del CSV "
-                        "para realizar los cruces."
-                    )
-                    st.session_state.json_rips_resultados = all_jsons
-                    st.session_state.json_rips_origen = origen
-                except Exception as e:
-                    st.error(f"Error durante la generación: {e}")
-
+                    
+        # 3. Caso Ambos (RIPS + CSV)
         else:
-            if not excel_file_json:
-                st.error("Por favor, carga la plantilla Excel RIPS 948.")
+            if not csv_file_json or not zip_files_json:
+                st.error("Por favor, carga tanto el CSV como al menos un ZIP de RIPS.")
             else:
                 try:
-                    with st.spinner("Leyendo plantilla y generando JSON..."):
-                        all_jsons = creador.generar_desde_excel(
-                            excel_file_json.getvalue()
-                        )
-                    st.session_state.json_rips_resultados = all_jsons
-                    st.session_state.json_rips_origen = origen
+                    with st.spinner("Procesando CSV y ZIPs..."):
+                        # Cargar CSV
+                        num_afiliados = creador.cargar_datos_mutual_csv(csv_file_json.getvalue())
+                        st.info(f"ℹ️ Se cargaron {num_afiliados} afiliados del CSV para lookups.")
+                        
+                        # Generar desde ZIP cruzando datos
+                        all_jsons = {}
+                        for f in zip_files_json:
+                            res = creador.generar_desde_zip(f.getvalue())
+                            all_jsons.update(res)
+                            
+                        st.success(f"✅ Procesados {len(zip_files_json)} ZIPs con lookup de CSV. Se generaron {len(all_jsons)} facturas JSON.")
+                        
+                        # Mostrar facturas generadas
+                        for num_fac, json_data in all_jsons.items():
+                            with st.expander(f"Factura {num_fac} (Ver JSON)", expanded=False):
+                                st.json(json_data)
+                                json_str = json.dumps(json_data, indent=2, ensure_ascii=False)
+                                st.download_button(
+                                    label=f"⬇️ Descargar {num_fac}.json",
+                                    data=json_str,
+                                    file_name=f"{num_fac}.json",
+                                    mime="application/json",
+                                    key=f"dl_ind_ambos_{num_fac}"
+                                )
+                                
+                        # Descarga masiva ZIP
+                        if len(all_jsons) > 0:
+                            buf = io.BytesIO()
+                            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zout:
+                                for num_fac, json_data in all_jsons.items():
+                                    json_str = json.dumps(json_data, indent=2, ensure_ascii=False)
+                                    zout.writestr(f"{num_fac}.json", json_str)
+                            st.divider()
+                            st.download_button(
+                                label=f"⬇️ Descargar TODOS los JSON (.zip) — {len(all_jsons)}",
+                                data=buf.getvalue(),
+                                file_name="RIPS_JSON_Cruzado_Resolucion2275.zip",
+                                mime="application/zip"
+                            )
                 except Exception as e:
-                    st.error(f"Error durante la generación desde Excel: {e}")
-
-    resultados_json = st.session_state.get("json_rips_resultados")
-    origen_resultado = st.session_state.get("json_rips_origen")
-
-    if resultados_json and origen_resultado == origen:
-        st.success(
-            f"✅ Se generaron {len(resultados_json)} factura(s) JSON correctamente."
-        )
-
-        for num_fac, json_data in resultados_json.items():
-            with st.expander(f"Factura {num_fac} — Ver JSON", expanded=False):
-                st.json(json_data)
-                json_str = json.dumps(
-                    json_data,
-                    indent=2,
-                    ensure_ascii=False,
-                )
-                st.download_button(
-                    label=f"⬇️ Descargar {num_fac}.json",
-                    data=json_str,
-                    file_name=f"{num_fac}.json",
-                    mime="application/json",
-                    key=f"dl_json_{origen}_{num_fac}",
-                )
-
-        if resultados_json:
-            buffer_zip = io.BytesIO()
-            with zipfile.ZipFile(
-                buffer_zip,
-                "w",
-                zipfile.ZIP_DEFLATED,
-            ) as zout:
-                for num_fac, json_data in resultados_json.items():
-                    json_str = json.dumps(
-                        json_data,
-                        indent=2,
-                        ensure_ascii=False,
-                    )
-                    zout.writestr(f"{num_fac}.json", json_str)
-
-            nombre_zip = (
-                "RIPS_JSON_Resolucion_948.zip"
-                if origen == "Plantilla Excel (RIPS 948)"
-                else "RIPS_JSON_generados.zip"
-            )
-
-            st.divider()
-            st.download_button(
-                label=(
-                    f"⬇️ Descargar TODOS los JSON (.zip) — "
-                    f"{len(resultados_json)}"
-                ),
-                data=buffer_zip.getvalue(),
-                file_name=nombre_zip,
-                mime="application/zip",
-                key=f"dl_zip_json_{origen}",
-            )
+                    st.error(f"Error durante la generación: {e}")

@@ -23,6 +23,7 @@ del número de contrato).
 from __future__ import annotations
 
 import copy
+import csv
 import io
 import os
 import re
@@ -600,6 +601,185 @@ def _aplicar_codigo_prestador(target_inv, cambios: List[str]) -> None:
 
 
 
+
+# ---------------------------------------------------------------------------
+# Detección de régimen desde CSV de Mutual
+# ---------------------------------------------------------------------------
+
+MAPA_ADMINISTRADORA_REGIMEN = {
+    "ESSC07": "contributivo",
+    "ESS207": "subsidiado",
+}
+
+
+def _normalizar_valor_csv(valor) -> str:
+    if valor is None:
+        return ""
+    texto = str(valor).strip()
+    if texto.endswith(".0"):
+        texto = texto[:-2]
+    return texto
+
+
+def _leer_csv_mutual(csv_bytes: bytes):
+    """Lee el CSV de Mutual tolerando separador y codificación."""
+    texto = None
+    for encoding in ("utf-8-sig", "latin-1", "cp1252"):
+        try:
+            texto = csv_bytes.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+
+    if texto is None:
+        raise ValueError("No fue posible leer el CSV de Mutual.")
+
+    muestra = texto[:10000]
+    try:
+        dialecto = csv.Sniffer().sniff(muestra, delimiters=",;|\t")
+        delimitador = dialecto.delimiter
+    except csv.Error:
+        delimitador = ","
+
+    lector = csv.DictReader(io.StringIO(texto), delimiter=delimitador)
+    return list(lector)
+
+
+def _extraer_identificadores_xml(xml_bytes: bytes):
+    """Extrae documentos y autorizaciones de la factura embebida."""
+    root = etree.fromstring(xml_bytes)
+    desc = root.find(XP_DESCRIPTION)
+    if desc is None or not (desc.text or "").strip():
+        return set(), set()
+
+    invoice_text = _extraer_invoice(desc.text)
+    if not invoice_text:
+        return set(), set()
+
+    invoice = etree.fromstring(invoice_text.encode("utf-8"))
+    documentos = set()
+    autorizaciones = set()
+
+    for ai in invoice.iter():
+        if not isinstance(ai.tag, str) or _local(ai.tag) != "AdditionalInformation":
+            continue
+
+        name_el = next(
+            (
+                c for c in ai
+                if isinstance(c.tag, str) and _local(c.tag) == "Name"
+            ),
+            None,
+        )
+        value_el = next(
+            (
+                c for c in ai
+                if isinstance(c.tag, str) and _local(c.tag) == "Value"
+            ),
+            None,
+        )
+        if name_el is None or value_el is None:
+            continue
+
+        nombre = (name_el.text or "").strip().upper()
+        valor = (value_el.text or "").strip()
+
+        if nombre == "NUMERO_DOCUMENTO_IDENTIFICACION" and valor:
+            documentos.add(_normalizar_valor_csv(valor))
+
+        if nombre == "NUMERO_AUTORIZACION" and valor:
+            for parte in re.split(r"[;,\s]+", valor):
+                parte = _normalizar_valor_csv(parte)
+                if parte:
+                    autorizaciones.add(parte)
+
+    return documentos, autorizaciones
+
+
+def inferir_regimen_desde_csv_mutual(
+    xml_bytes: bytes,
+    csv_bytes: bytes,
+):
+    """Determina el régimen usando C_ADMINISTRADORA del CSV de Mutual.
+
+    Busca primero por NUMERO_AUTORIZACION y luego por documento del afiliado.
+    Devuelve (regimen, detalle). Si no puede resolverlo de forma inequívoca,
+    devuelve (None, detalle).
+    """
+    filas = _leer_csv_mutual(csv_bytes)
+    documentos_xml, autorizaciones_xml = _extraer_identificadores_xml(xml_bytes)
+
+    coincidencias = []
+
+    for fila in filas:
+        administradora = _normalizar_valor_csv(
+            fila.get("C_ADMINISTRADORA")
+        ).upper()
+        regimen = MAPA_ADMINISTRADORA_REGIMEN.get(administradora)
+        if not regimen:
+            continue
+
+        documento = _normalizar_valor_csv(
+            fila.get("C_DOCUMENTO_AFILIADO")
+        )
+        autorizaciones_fila = {
+            _normalizar_valor_csv(fila.get("NUMERO_AUTORIZACION")),
+            _normalizar_valor_csv(fila.get("N_NUMERO_AUTORIZACION")),
+        }
+        autorizaciones_fila.discard("")
+
+        coincide_autorizacion = bool(
+            autorizaciones_xml.intersection(autorizaciones_fila)
+        )
+        coincide_documento = bool(
+            documento and documento in documentos_xml
+        )
+
+        if coincide_autorizacion or coincide_documento:
+            prioridad = 2 if coincide_autorizacion else 1
+            coincidencias.append(
+                {
+                    "regimen": regimen,
+                    "administradora": administradora,
+                    "documento": documento,
+                    "autorizaciones": sorted(autorizaciones_fila),
+                    "prioridad": prioridad,
+                }
+            )
+
+    if not coincidencias:
+        return None, (
+            "No se encontró coincidencia por autorización ni documento "
+            "entre el XML y el CSV de Mutual."
+        )
+
+    maxima_prioridad = max(c["prioridad"] for c in coincidencias)
+    mejores = [
+        c for c in coincidencias
+        if c["prioridad"] == maxima_prioridad
+    ]
+    regimenes = {c["regimen"] for c in mejores}
+
+    if len(regimenes) != 1:
+        return None, (
+            "El CSV contiene coincidencias con regímenes diferentes para "
+            "la misma factura; debe revisarse manualmente."
+        )
+
+    elegida = mejores[0]
+    criterio = (
+        "autorización"
+        if maxima_prioridad == 2
+        else "documento"
+    )
+    detalle = (
+        f"Régimen detectado por {criterio}: "
+        f"{elegida['regimen'].capitalize()} "
+        f"({elegida['administradora']})."
+    )
+    return elegida["regimen"], detalle
+
+
 # ---------------------------------------------------------------------------
 # Estructura sector salud - Resolución 000948 de 2026
 # ---------------------------------------------------------------------------
@@ -688,7 +868,11 @@ def _actualizar_resolucion_948(target_inv, cambios: List[str]) -> None:
                 return
 
 
-def _reconstruir_sector_salud_948(target_inv, cambios: List[str]) -> None:
+def _reconstruir_sector_salud_948(
+    target_inv,
+    cambios: List[str],
+    regimen: Optional[str] = None,
+) -> None:
     """Reconstruye Collection Usuario con la estructura aceptada por Mutual."""
     interoperabilidad, _, collection = _buscar_collection_sector_salud(target_inv)
     if collection is None:
@@ -730,12 +914,37 @@ def _reconstruir_sector_salud_948(target_inv, cambios: List[str]) -> None:
         "COBERTURA_PLAN_BENEFICIOS", {}
     ).get("schemeID", "")
 
-    if "SUBSIDIADO" in tipo_usuario or cobertura_id_actual == "17":
-        cobertura_texto = "Plan UPC — Régimen Subsidiado"
-        cobertura_id = "17"
-    else:
+    regimen_normalizado = (regimen or "").strip().lower()
+
+    if regimen_normalizado in ("contributivo", "01", "1"):
         cobertura_texto = "Plan UPC — Régimen Contributivo"
         cobertura_id = "16"
+        cambios.append(
+            "Cobertura definida manualmente como Régimen Contributivo"
+        )
+    elif regimen_normalizado in ("subsidiado", "04", "4"):
+        cobertura_texto = "Plan UPC — Régimen Subsidiado"
+        cobertura_id = "17"
+        cambios.append(
+            "Cobertura definida manualmente como Régimen Subsidiado"
+        )
+    elif "CONTRIBUTIVO" in tipo_usuario or cobertura_id_actual == "16":
+        cobertura_texto = "Plan UPC — Régimen Contributivo"
+        cobertura_id = "16"
+        cambios.append(
+            "Cobertura detectada automáticamente como Régimen Contributivo"
+        )
+    elif "SUBSIDIADO" in tipo_usuario or cobertura_id_actual == "17":
+        cobertura_texto = "Plan UPC — Régimen Subsidiado"
+        cobertura_id = "17"
+        cambios.append(
+            "Cobertura detectada automáticamente como Régimen Subsidiado"
+        )
+    else:
+        raise ValueError(
+            "No fue posible determinar el régimen del usuario. "
+            "Seleccione Contributivo o Subsidiado antes de corregir el XML."
+        )
 
     datos = {
         "CODIGO_PRESTADOR": (
@@ -851,9 +1060,10 @@ def _reconstruir_sector_salud_948(target_inv, cambios: List[str]) -> None:
 def _aplicar_estructura_sector_salud_948(
     target_inv,
     cambios: List[str],
+    regimen: Optional[str] = None,
 ) -> None:
     _actualizar_resolucion_948(target_inv, cambios)
-    _reconstruir_sector_salud_948(target_inv, cambios)
+    _reconstruir_sector_salud_948(target_inv, cambios, regimen)
 
 
 # ---------------------------------------------------------------------------
@@ -915,8 +1125,13 @@ def cargar_plantilla() -> bytes:
 # API principal
 # ---------------------------------------------------------------------------
 
-def corregir_xml(xml_bytes: bytes, plantilla_bytes: bytes, cucon: str,
-                 nombre: str = "factura.xml") -> ResultadoCorreccion:
+def corregir_xml(
+    xml_bytes: bytes,
+    plantilla_bytes: bytes,
+    cucon: str,
+    nombre: str = "factura.xml",
+    regimen: Optional[str] = None,
+) -> ResultadoCorreccion:
     res = ResultadoCorreccion(nombre=nombre)
 
     try:
@@ -968,7 +1183,11 @@ def corregir_xml(xml_bytes: bytes, plantilla_bytes: bytes, cucon: str,
             _aplicar_cucon(target_inv, cucon.strip(), res.cambios)
 
         # Estructura definitiva del nodo Sector Salud según Resolución 948.
-        _aplicar_estructura_sector_salud_948(target_inv, res.cambios)
+        _aplicar_estructura_sector_salud_948(
+            target_inv,
+            res.cambios,
+            regimen,
+        )
 
         # 7) Re-empaquetar: reemplazar el Description con la invoice corregida.
         #    Se reemplaza SOLO el texto del Description; el resto del
@@ -1012,8 +1231,12 @@ def corregir_xml(xml_bytes: bytes, plantilla_bytes: bytes, cucon: str,
     return res
 
 
-def corregir_xml_con_plantilla(xml_bytes: bytes, cucon: str,
-                               nombre: str = "factura.xml") -> ResultadoCorreccion:
+def corregir_xml_con_plantilla(
+    xml_bytes: bytes,
+    cucon: str,
+    nombre: str = "factura.xml",
+    regimen: Optional[str] = None,
+) -> ResultadoCorreccion:
     """Igual que corregir_xml pero usando la plantilla de referencia interna.
 
     El usuario sólo sube su factura incompleta; la plantilla es fija.
@@ -1025,4 +1248,10 @@ def corregir_xml_con_plantilla(xml_bytes: bytes, cucon: str,
         res.ok = False
         res.mensaje = "No se encontró la plantilla de referencia interna."
         return res
-    return corregir_xml(xml_bytes, plantilla, cucon, nombre)
+    return corregir_xml(
+        xml_bytes,
+        plantilla,
+        cucon,
+        nombre,
+        regimen,
+    )
