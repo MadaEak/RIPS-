@@ -18,6 +18,8 @@ La tabla TablaReferenciaIUM.xlsx debe estar en la misma carpeta que este archivo
 
 from __future__ import annotations
 
+import copy
+import io
 import math
 import os
 import re
@@ -25,6 +27,7 @@ import unicodedata
 import zipfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, asdict
+from decimal import Decimal, InvalidOperation
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -36,13 +39,156 @@ from lxml import etree
 from generador_json import CreadorJsonRips, normalizar_factura
 
 
+VERSION_GENERADOR_SURA = "2026.07.19-v11-diagnosticos-relacionados-unicos"
+
 PATRON_AUTORIZACION_SURA = re.compile(r"(?<!\d)(139610)(?!-)(\d+)")
 PATRON_CUM_INICIAL = re.compile(r"^\s*(\d{4,8}-\d{1,3})(?:\s*-\s*[A-Z0-9]+)?", re.I)
 PATRON_FORTALEZA = re.compile(
-    r"(\d+(?:[.,]\d+)?)\s*(MCG|UG|MG|G|ML|UI|U)\b",
+    r"(\d+(?:[.,]\d+)?)\s*(MCG|UG|MG|ML|UI|G|U)",
     re.I,
 )
 
+
+
+MAPA_IUM_DIRECTO_SURA: Dict[str, Dict[str, str]] = {
+    # Soluciones y medicamentos cuyos nombres llegan compactados en el AM.
+    # Se usan únicamente cuando la presentación puede identificarse con
+    # seguridad por nombre, concentración, vía y contenido.
+    "CLORURODESODIO09500MLS": {
+        "codigo": "1S1016191010103",
+        "descripcion": (
+            "SODIO CLORURO 9MG/1ML, SOLUCIÓN INTRAVENOSA, "
+            "BOLSA 500 ML"
+        ),
+    },
+    "LEVOMEPROMAZINA40MG20ML4S": {
+        "codigo": "1L1011811000100",
+        "descripcion": (
+            "LEVOMEPROMAZINA 40MG/1ML, SOLUCIÓN ORAL, "
+            "FRASCO 20 ML"
+        ),
+    },
+    "MIDAZOLAM5MG5MLAMPOLLA": {
+        "codigo": "1M1006621000103",
+        "descripcion": (
+            "MIDAZOLAM 1MG/1ML, SOLUCIÓN INTRAVENOSA, "
+            "AMPOLLA 5 ML"
+        ),
+    },
+    "LACTATODERINGER500MLSOLUCI": {
+        "codigo": "2C1025481002100",
+        "descripcion": (
+            "SOLUCIÓN LACTATO DE RINGER, INTRAVENOSA, "
+            "BOLSA 500 ML, PRESENTACIÓN GENÉRICA"
+        ),
+    },
+}
+
+
+MAPA_CUPS_EQUIVALENTES_VIGENTES: Dict[str, Dict[str, str]] = {
+    # Código histórico de creatinina en suero. En la tabla CUPS vigente
+    # el procedimiento equivalente se encuentra como 903895.
+    "903825": {
+        "codigo": "903895",
+        "descripcion": "CREATININA EN SUERO U OTROS FLUIDOS",
+    },
+}
+
+
+
+
+MAPA_DIAGNOSTICOS_SURA: Dict[str, str] = {
+    # Zeus/SURA entrega 6031 sin la letra y con un quinto carácter que
+    # no corresponde al formato RIPS. El diagnóstico CIE-10 base es
+    # F60.3 y debe informarse sin punto como F603.
+    "6031": "F603",
+    # Repara también JSON generados por la versión V9.
+    "F6031": "F603",
+}
+
+
+def _normalizar_diagnostico_sura(valor: Any) -> Optional[str]:
+    """Normaliza códigos CIE-10 provenientes de los RIPS planos SURA.
+
+    Se retiran puntos y espacios. Los códigos exclusivamente numéricos no se
+    aceptan salvo equivalencias verificadas expresamente en el proyecto.
+    """
+    if valor is None:
+        return None
+
+    texto = str(valor).strip().upper()
+    if not texto or texto in {"NULL", "NONE", "NAN"}:
+        return None
+
+    compacto = re.sub(r"[^A-Z0-9]", "", texto)
+    if compacto in MAPA_DIAGNOSTICOS_SURA:
+        return MAPA_DIAGNOSTICOS_SURA[compacto]
+
+    if re.fullmatch(r"\d+", compacto):
+        raise ValueError(
+            "Código de diagnóstico sin prefijo alfabético: "
+            f"{texto}. Agregue una equivalencia CIE-10 confirmada."
+        )
+
+    # Los campos CIE-10 del RIPS deben quedar en formato compacto:
+    # una letra seguida de tres caracteres, por ejemplo F603 o F99X.
+    if not re.fullmatch(r"[A-Z][0-9]{2}[0-9A-Z]", compacto):
+        raise ValueError(
+            "Código de diagnóstico con formato o longitud inválida: "
+            f"{texto} -> {compacto}. Se esperaban 4 caracteres, "
+            "por ejemplo F603."
+        )
+
+    return compacto
+
+
+def _extraer_recaudos_af_sura(
+    zip_bytes: bytes,
+) -> Dict[str, Dict[str, int]]:
+    """Lee copago y cuota moderadora agregados del archivo AF."""
+    resultados: Dict[str, Dict[str, int]] = {}
+
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archivo_zip:
+        nombres = [
+            nombre
+            for nombre in archivo_zip.namelist()
+            if Path(nombre).name.upper().startswith("AF")
+            and nombre.lower().endswith(".txt")
+        ]
+
+        if not nombres:
+            return resultados
+
+        contenido = archivo_zip.read(nombres[0]).decode(
+            "utf-8-sig",
+            errors="ignore",
+        )
+
+    for linea in contenido.splitlines():
+        if not linea.strip():
+            continue
+
+        partes = [parte.strip() for parte in linea.split(",")]
+        if len(partes) < 15:
+            continue
+
+        factura = normalizar_factura(partes[4])
+
+        def entero_moneda(indice: int) -> int:
+            try:
+                return max(
+                    0,
+                    int(Decimal(partes[indice].replace(",", "."))),
+                )
+            except (InvalidOperation, ValueError, IndexError):
+                return 0
+
+        resultados[factura] = {
+            "01": entero_moneda(13),
+            "02": entero_moneda(14),
+        }
+
+    return resultados
 
 
 def _local_name(tag: Any) -> str:
@@ -203,6 +349,150 @@ def _compactar(valor: Any) -> str:
     return re.sub(r"[^A-Z0-9]", "", _normalizar_texto(valor))
 
 
+def _numero_fortaleza_canonico(valor: Any) -> str:
+    texto = str(valor or "").strip().replace(",", ".")
+    try:
+        numero = Decimal(texto)
+    except (InvalidOperation, ValueError):
+        return texto
+
+    normalizado = format(numero.normalize(), "f")
+    if "." in normalizado:
+        normalizado = normalizado.rstrip("0").rstrip(".")
+    return normalizado or "0"
+
+
+def _nombre_busqueda_ium(nombre: Any) -> str:
+    """Amplía nombres compactados del AM para buscar un IUM exacto."""
+    original = "" if nombre is None else str(nombre)
+    compacto = _compactar(original)
+
+    if compacto.startswith("LEVOMEPROMAZINA40MG20ML"):
+        return (
+            "LEVOMEPROMAZINA 40MG/1ML OTRAS SOLUCIONES ORAL "
+            "FRASCO 20ML"
+        )
+
+    if compacto.startswith("MIDAZOLAM5MG5MLAMPOLLA"):
+        return (
+            "MIDAZOLAM 1MG/1ML OTRAS SOLUCIONES INTRAVENOSA "
+            "AMPOLLA 5ML"
+        )
+
+    if compacto.startswith("CLORURODESODIO09500ML"):
+        return (
+            "SODIO CLORURO 9MG/1ML OTRAS SOLUCIONES "
+            "INTRAVENOSA BOLSA 500ML"
+        )
+
+    if compacto.startswith("CARBONATODELITIOTABLETA"):
+        # Carbonato de litio se trata como LITIO. Como la tabla aportada
+        # no contiene 300 mg, se selecciona la tableta oral más cercana,
+        # priorizando el empaque informado en el AM.
+        return "LITIO TABLETA ORAL"
+
+    if compacto.startswith("DIVALPROATODESODIO"):
+        # Divalproato se trata como ácido valproico, conservando la
+        # concentración 250/500 mg y la forma de tableta.
+        coincidencia = re.search(r"(\d+(?:\.\d+)?)MG", compacto)
+        concentracion = (
+            f"{coincidencia.group(1)}MG "
+            if coincidencia
+            else ""
+        )
+        return (
+            f"ACIDO VALPROICO {concentracion}"
+            "TABLETA ORAL"
+        )
+
+    if compacto.startswith("CLONAZEPAM05MGTABLETA"):
+        # No hay tableta de 0,5 mg en la tabla. Se usa la tableta de
+        # clonazepam más cercana según el empaque del AM.
+        return "CLONAZEPAM TABLETA ORAL"
+
+    if compacto.startswith("MELATONINA3MGTABLETA"):
+        # La tabla contiene melatonina 3 mg en cápsula. Se usa como
+        # presentación oral más cercana.
+        return "MELATONINA 3MG CAPSULA ORAL"
+
+    return original
+
+
+
+
+def _ignorar_concentracion_en_equivalencia_ium(
+    nombre: Any,
+) -> bool:
+    """Indica cuándo la concentración puede aproximarse.
+
+    Esta excepción es deliberada y limitada a las equivalencias autorizadas:
+    - carbonato de litio 300 mg -> litio oral más cercano;
+    - clonazepam 0,5 mg -> tableta de clonazepam más cercana.
+
+    Para divalproato y melatonina se sigue exigiendo la concentración exacta.
+    """
+    compacto = _compactar(nombre)
+
+    return (
+        compacto.startswith("CARBONATODELITIOTABLETA")
+        or compacto.startswith("CLONAZEPAM05MGTABLETA")
+    )
+
+
+def _nota_equivalencia_aproximada_ium(
+    nombre: Any,
+) -> Optional[str]:
+    compacto = _compactar(nombre)
+
+    if compacto.startswith("CARBONATODELITIOTABLETA"):
+        return (
+            "Equivalencia aproximada autorizada: carbonato de litio "
+            "se trató como LITIO; se permitió aproximar la concentración "
+            "de 300 mg a la tableta oral más cercana disponible."
+        )
+
+    if compacto.startswith("DIVALPROATODESODIO"):
+        return (
+            "Equivalencia aproximada autorizada: divalproato de sodio "
+            "se trató como ÁCIDO VALPROICO conservando concentración "
+            "y forma de tableta."
+        )
+
+    if compacto.startswith("CLONAZEPAM05MGTABLETA"):
+        return (
+            "Equivalencia aproximada autorizada: se permitió "
+            "aproximar clonazepam 0,5 mg a la tableta de clonazepam "
+            "más cercana disponible."
+        )
+
+    if compacto.startswith("MELATONINA3MGTABLETA"):
+        return (
+            "Equivalencia aproximada autorizada: melatonina 3 mg "
+            "tableta se relacionó con la presentación oral de 3 mg "
+            "más cercana disponible."
+        )
+
+    return None
+
+
+def _principio_objetivo_ium(nombre: Any) -> Optional[str]:
+    compacto = _compactar(nombre)
+
+    if compacto.startswith("SODIOCLORURO"):
+        return "SODIOCLORURO"
+    if compacto.startswith("ACIDOVALPROICO"):
+        return "ACIDOVALPROICO"
+    if compacto.startswith("LITIO"):
+        return "LITIO"
+    if compacto.startswith("CLONAZEPAM"):
+        return "CLONAZEPAM"
+    if compacto.startswith("MELATONINA"):
+        return "MELATONINA"
+    if compacto.startswith("VALPROATOSEMISODICO"):
+        return "VALPROATOSEMISODICO"
+    return None
+
+
 def _normalizar_autorizacion(valor: Any) -> Optional[str]:
     if valor is None:
         return None
@@ -215,9 +505,15 @@ def _normalizar_autorizacion(valor: Any) -> Optional[str]:
 def _extraer_fortalezas(*valores: Any) -> set[str]:
     resultado: set[str] = set()
     for valor in valores:
-        texto = _normalizar_texto(valor)
+        texto = "" if valor is None else str(valor)
+        texto = "".join(
+            caracter
+            for caracter in unicodedata.normalize("NFD", texto)
+            if unicodedata.category(caracter) != "Mn"
+        ).upper().replace(",", ".")
+
         for numero, unidad in PATRON_FORTALEZA.findall(texto):
-            numero = numero.replace(",", ".")
+            numero = _numero_fortaleza_canonico(numero)
             unidad = unidad.upper()
             if unidad == "UG":
                 unidad = "MCG"
@@ -541,6 +837,59 @@ def _codigo_unidad_medida_am(valor: Any) -> int:
     return 0
 
 
+
+def _normalizar_concentracion_unidad_am(
+    valor_concentracion: Any,
+    valor_unidad: Any,
+) -> tuple[int, int]:
+    """Convierte concentración y unidad a valores enteros válidos.
+
+    Ejemplos:
+    - 0.5 mg = 500 microgramos, UMM 137
+    - 0.5 g  = 500 miligramos, UMM 168
+    - 0.5 ml = 500 microlitros, UMM 146
+    - 0.5 l  = 500 mililitros, UMM 176
+    """
+    unidad = _codigo_unidad_medida_am(valor_unidad)
+
+    if valor_concentracion is None:
+        return 0, unidad
+
+    if isinstance(valor_concentracion, (int, float)):
+        texto_numero = str(valor_concentracion)
+    else:
+        texto = str(valor_concentracion).strip().replace(",", ".")
+        coincidencia = re.search(r"[-+]?\d+(?:\.\d+)?", texto)
+        if not coincidencia:
+            return 0, unidad
+        texto_numero = coincidencia.group(0)
+
+    try:
+        numero = Decimal(texto_numero)
+    except (InvalidOperation, ValueError):
+        return 0, unidad
+
+    if numero == numero.to_integral_value():
+        return int(numero), unidad
+
+    conversiones = {
+        168: (Decimal("1000"), 137),
+        62: (Decimal("1000"), 168),
+        176: (Decimal("1000"), 146),
+        100: (Decimal("1000"), 176),
+    }
+
+    conversion = conversiones.get(unidad)
+    if conversion:
+        factor, unidad_destino = conversion
+        convertido = numero * factor
+        if convertido == convertido.to_integral_value():
+            return int(convertido), unidad_destino
+
+    # El esquema rechaza decimales; no se genera un float.
+    return 0, unidad
+
+
 def _forma_farmaceutica_am(valor: Any) -> Optional[str]:
     """Conserva la forma únicamente cuando la fuente trae un código útil."""
     if valor is None:
@@ -573,6 +922,8 @@ class DecisionIUM:
     detalle: str
     candidatos: str = ""
     numero_documento_profesional: Optional[str] = None
+    factura_generada: str = "PENDIENTE"
+    error_factura: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -693,12 +1044,26 @@ class CatalogoIUM:
         Cuando el RIPS no informa una marca, se prefieren registros clasificados
         como genéricos en la tabla oficial.
         """
-        fuente_norm = _normalizar_texto(nombre)
-        fuente_compacta = _compactar(nombre)
-        fortalezas = _extraer_fortalezas(nombre, concentracion)
-        forma_fuente = _forma_general(nombre, forma)
-        via_fuente = _extraer_via(nombre, forma)
-        marca_fuente = _extraer_marca(nombre)
+        nombre_busqueda = _nombre_busqueda_ium(nombre)
+        fuente_norm = _normalizar_texto(nombre_busqueda)
+        fuente_compacta = _compactar(nombre_busqueda)
+        ignorar_concentracion = (
+            _ignorar_concentracion_en_equivalencia_ium(nombre)
+        )
+
+        if ignorar_concentracion:
+            fortalezas = set()
+        else:
+            fortalezas = _extraer_fortalezas(
+                nombre_busqueda,
+                concentracion,
+            )
+        forma_fuente = _forma_general(nombre_busqueda, forma)
+        via_fuente = _extraer_via(nombre_busqueda, forma)
+        marca_fuente = _extraer_marca(nombre_busqueda)
+        principio_objetivo = _principio_objetivo_ium(
+            nombre_busqueda
+        )
 
         try:
             cantidad_entera = int(float(cantidad))
@@ -716,19 +1081,25 @@ class CatalogoIUM:
             palabras_principio = set(principio.split())
             principio_compacto = _compactar(principio)
 
-            contiene_principio = bool(
-                palabras_principio
-                and palabras_principio.issubset(palabras_fuente)
-            )
-            if (
-                not contiene_principio
-                and principio_compacto not in fuente_compacta
-            ):
-                continue
+            if principio_objetivo:
+                if principio_compacto != principio_objetivo:
+                    continue
+            else:
+                contiene_principio = bool(
+                    palabras_principio
+                    and palabras_principio.issubset(palabras_fuente)
+                )
+                if (
+                    not contiene_principio
+                    and principio_compacto not in fuente_compacta
+                ):
+                    continue
 
             fortalezas_candidata = fila["_fortalezas"]
-            if fortalezas and fortalezas_candidata:
-                if fortalezas.isdisjoint(fortalezas_candidata):
+            if fortalezas:
+                if not fortalezas_candidata:
+                    continue
+                if not fortalezas.issubset(fortalezas_candidata):
                     continue
 
             forma_candidata = fila["_forma_general"]
@@ -788,7 +1159,7 @@ class CatalogoIUM:
             else:
                 puntaje += 8.0
 
-            similitud = _similitud_texto(nombre, fila["Nombre"])
+            similitud = _similitud_texto(nombre_busqueda, fila["Nombre"])
             puntaje += similitud * 20.0
 
             empaque = fila["_empaque"]
@@ -889,10 +1260,41 @@ class CatalogoIUM:
                 "candidatos": [],
             }
 
+        nombre_compacto = _compactar(nombre)
+        equivalencia_directa = MAPA_IUM_DIRECTO_SURA.get(
+            nombre_compacto
+        )
+
+        if equivalencia_directa:
+            codigo_directo = equivalencia_directa["codigo"]
+
+            if codigo_directo not in self.codigos:
+                raise ValueError(
+                    "La equivalencia directa "
+                    f"{nombre_compacto} -> {codigo_directo} no existe o "
+                    "no está habilitada en TablaReferenciaIUM.xlsx."
+                )
+
+            return {
+                "codigo": codigo_directo,
+                "estado": "IUM_EQUIVALENTE_SELECCIONADO",
+                "detalle": (
+                    "Se aplicó una equivalencia directa validada por "
+                    "principio activo, concentración, vía y presentación: "
+                    + equivalencia_directa["descripcion"]
+                    + "."
+                ),
+                "candidatos": [],
+            }
+
         cum = None
         coincidencia_cum = PATRON_CUM_INICIAL.match(codigo_original)
         if coincidencia_cum:
             cum = coincidencia_cum.group(1)
+
+        nota_aproximacion = (
+            _nota_equivalencia_aproximada_ium(nombre)
+        )
 
         candidatos = self._candidatos(
             str(nombre or ""),
@@ -917,7 +1319,12 @@ class CatalogoIUM:
                 "codigo": mejor["Codigo"],
                 "estado": "IUM_EQUIVALENTE_SELECCIONADO",
                 "detalle": (
-                    "Se seleccionó el IUM habilitado más semejante por "
+                    (
+                        nota_aproximacion + " "
+                        if nota_aproximacion
+                        else ""
+                    )
+                    + "Se seleccionó el IUM habilitado más semejante por "
                     "principio activo, concentración, forma farmacéutica, "
                     "vía, condición comercial y presentación. "
                     f"Puntaje: {mejor['Puntaje']}. "
@@ -947,6 +1354,160 @@ class CatalogoIUM:
             "candidatos": [],
         }
 
+
+
+
+class CatalogoCUPS:
+    """Consulta la tabla CUPS oficial sin depender de openpyxl."""
+
+    def __init__(self, ruta_excel: str | os.PathLike[str]):
+        ruta = Path(ruta_excel)
+        if not ruta.exists():
+            raise FileNotFoundError(
+                "No se encontró TablaReferencia_CUPS.xlsx en la carpeta "
+                "'Generador Json'."
+            )
+
+        df = _leer_xlsx_sin_openpyxl(str(ruta))
+
+        columnas_requeridas = {
+            "Codigo",
+            "Nombre",
+            "Habilitado",
+            "Descripcion",
+            "Extra_VII",
+            "Extra_VIII",
+            "Extra_IX",
+        }
+        faltantes = columnas_requeridas.difference(df.columns)
+        if faltantes:
+            raise ValueError(
+                "La tabla CUPS no contiene estas columnas requeridas: "
+                + ", ".join(sorted(faltantes))
+            )
+
+        df = df.fillna("")
+        df["Codigo"] = (
+            df["Codigo"]
+            .astype(str)
+            .str.strip()
+            .str.replace(r"\.0$", "", regex=True)
+            .str.zfill(6)
+        )
+        df["Habilitado"] = (
+            df["Habilitado"].astype(str).map(_normalizar_texto)
+        )
+
+        # Se conservan solamente registros habilitados.
+        df = df[df["Habilitado"] == "SI"].copy()
+
+        self.registros: Dict[str, Dict[str, Any]] = {}
+        for _, fila in df.iterrows():
+            codigo = str(fila["Codigo"]).strip()
+            if not codigo:
+                continue
+
+            self.registros[codigo] = {
+                "Codigo": codigo,
+                "Nombre": str(fila.get("Nombre", "")).strip(),
+                "Descripcion": str(
+                    fila.get("Descripcion", "")
+                ).strip(),
+                "Categoria": str(
+                    fila.get("Extra_IX", "")
+                ).strip(),
+                "Grupo": str(
+                    fila.get("Extra_VIII", "")
+                ).strip(),
+                "Subgrupo": str(
+                    fila.get("Extra_VII", "")
+                ).strip(),
+            }
+
+    def obtener(self, codigo: Any) -> Optional[Dict[str, Any]]:
+        cups = str(codigo or "").strip().replace(".0", "").zfill(6)
+        return self.registros.get(cups)
+
+    def resolver_servicio(
+        self,
+        codigo: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """Infiere servicio, grupo y finalidad según el CUPS.
+
+        Las reglas explícitas del proyecto siguen teniendo prioridad.
+        La tabla permite resolver automáticamente familias completas,
+        evitando agregar individualmente cada examen de laboratorio.
+        """
+        registro = self.obtener(codigo)
+        if registro is None:
+            return None
+
+        texto_clasificacion = _normalizar_texto(
+            " ".join(
+                [
+                    registro["Nombre"],
+                    registro["Descripcion"],
+                    registro["Categoria"],
+                    registro["Grupo"],
+                    registro["Subgrupo"],
+                ]
+            )
+        )
+
+        # Capítulo 17 / Laboratorio clínico:
+        # servicio REPS 706, apoyo diagnóstico, finalidad diagnóstico.
+        if "LABORATORIO CLINICO" in texto_clasificacion:
+            return {
+                "codServicio": 706,
+                "grupoServicios": "02",
+                "finalidadTecnologiaSalud": "15",
+                "descripcion": registro["Nombre"],
+                "origen": "TablaReferencia_CUPS.xlsx",
+            }
+
+        return {
+            "sinRegla": True,
+            "descripcion": registro["Nombre"],
+            "categoria": registro["Categoria"],
+        }
+
+
+
+FAMILIAS_CUPS_LABORATORIO: Dict[str, str] = {
+    "902": "HEMATOLOGÍA",
+    "903": "QUÍMICA SANGUÍNEA Y DE OTROS FLUIDOS CORPORALES",
+    "904": "ENDOCRINOLOGÍA",
+    "905": "MONITOREO DE MEDICAMENTOS Y TOXICOLOGÍA",
+    "906": "MICROBIOLOGÍA",
+    "907": "INMUNOLOGÍA",
+    "908": "ANATOMÍA PATOLÓGICA Y CITOLOGÍA",
+    "909": "OTROS PROCEDIMIENTOS DE LABORATORIO",
+}
+
+
+def _configuracion_provisional_cups(
+    codigo: Any,
+) -> Optional[Dict[str, Any]]:
+    """Obtiene una clasificación provisional por familia CUPS.
+
+    Esta función no reemplaza la tabla oficial. Permite que un lote continúe
+    cuando un examen de laboratorio no aparece todavía en el XLSX local.
+    """
+    cups = str(codigo or "").strip().replace(".0", "").zfill(6)
+    familia = cups[:3]
+    nombre_familia = FAMILIAS_CUPS_LABORATORIO.get(familia)
+
+    if not nombre_familia:
+        return None
+
+    return {
+        "codServicio": 706,
+        "grupoServicios": "02",
+        "finalidadTecnologiaSalud": "15",
+        "descripcion": nombre_familia,
+        "origen": "clasificación provisional por prefijo",
+        "provisional": True,
+    }
 
 
 # Correspondencia inicial para los procedimientos facturados por SURA.
@@ -997,6 +1558,7 @@ class CreadorJsonRipsSura(CreadorJsonRips):
         regimen_por_factura: Optional[Dict[str, str]] = None,
         numero_documento_profesional: Optional[str] = None,
         ruta_tabla_ium: Optional[str] = None,
+        ruta_tabla_cups: Optional[str] = None,
         registro_medico_prescriptor: Optional[str] = None,
     ):
         super().__init__()
@@ -1058,9 +1620,16 @@ class CreadorJsonRipsSura(CreadorJsonRips):
                 Path(__file__).with_name("TablaReferenciaIUM.xlsx")
             )
 
+        if ruta_tabla_cups is None:
+            ruta_tabla_cups = str(
+                Path(__file__).with_name("TablaReferencia_CUPS.xlsx")
+            )
+
         self.catalogo_ium = CatalogoIUM(ruta_tabla_ium)
+        self.catalogo_cups = CatalogoCUPS(ruta_tabla_cups)
         self.ultimo_reporte_ium: List[Dict[str, Any]] = []
         self.advertencias: List[str] = []
+        self.errores_factura: List[Dict[str, str]] = []
 
     def _regimen_de_factura(self, numero_factura: str) -> str:
         factura_normalizada = normalizar_factura(numero_factura)
@@ -1145,6 +1714,189 @@ class CreadorJsonRipsSura(CreadorJsonRips):
             ),
             "dias": dias,
         }
+
+    def _ajustar_diagnosticos_sura(
+        self,
+        factura: str,
+        usuario: Dict[str, Any],
+    ) -> None:
+        """Normaliza todos los diagnósticos CIE-10 de los servicios."""
+        cambios = []
+
+        for nombre_lista, registros in usuario.get(
+            "servicios",
+            {},
+        ).items():
+            if not isinstance(registros, list):
+                continue
+
+            for indice, registro in enumerate(registros, start=1):
+                if not isinstance(registro, dict):
+                    continue
+
+                for campo, valor in list(registro.items()):
+                    if not campo.startswith("codDiagnostico"):
+                        continue
+                    if campo.endswith("CIE11"):
+                        continue
+                    if valor in (None, ""):
+                        continue
+
+                    normalizado = _normalizar_diagnostico_sura(valor)
+                    if normalizado != valor:
+                        registro[campo] = normalizado
+                        cambios.append(
+                            f"{nombre_lista}[{indice}].{campo}: "
+                            f"{valor} -> {normalizado}"
+                        )
+
+                # Después de normalizar, un diagnóstico relacionado no puede
+                # ser igual al principal. También se eliminan relacionados
+                # repetidos dentro del mismo servicio.
+                diagnosticos_principales = {
+                    str(valor).strip()
+                    for campo, valor in registro.items()
+                    if campo.startswith("codDiagnosticoPrincipal")
+                    and not campo.endswith("CIE11")
+                    and valor not in (None, "")
+                }
+
+                relacionados_vistos = set()
+                for campo, valor in list(registro.items()):
+                    if not campo.startswith("codDiagnosticoRelacionado"):
+                        continue
+                    if campo.endswith("CIE11"):
+                        continue
+                    if valor in (None, ""):
+                        continue
+
+                    codigo = str(valor).strip()
+
+                    if codigo in diagnosticos_principales:
+                        registro[campo] = None
+                        cambios.append(
+                            f"{nombre_lista}[{indice}].{campo}: "
+                            f"{codigo} -> null "
+                            "(igual al diagnóstico principal)"
+                        )
+                        continue
+
+                    if codigo in relacionados_vistos:
+                        registro[campo] = None
+                        cambios.append(
+                            f"{nombre_lista}[{indice}].{campo}: "
+                            f"{codigo} -> null "
+                            "(diagnóstico relacionado repetido)"
+                        )
+                        continue
+
+                    relacionados_vistos.add(codigo)
+
+        if cambios:
+            self.advertencias.append(
+                f"{factura}: diagnósticos normalizados: "
+                + " | ".join(cambios[:10])
+                + (
+                    f" | y {len(cambios) - 10} cambio(s) adicional(es)"
+                    if len(cambios) > 10
+                    else ""
+                )
+            )
+
+    @staticmethod
+    def _registros_con_recaudo(
+        factura: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Lista servicios que contienen campos de pago moderador."""
+        orden = (
+            "consultas",
+            "procedimientos",
+            "medicamentos",
+            "otrosServicios",
+            "urgencias",
+        )
+        resultado: List[Dict[str, Any]] = []
+
+        for usuario in factura.get("usuarios", []):
+            servicios = usuario.get("servicios", {})
+            for nombre_lista in orden:
+                for registro in servicios.get(nombre_lista, []) or []:
+                    if (
+                        isinstance(registro, dict)
+                        and "valorPagoModerador" in registro
+                        and "conceptoRecaudo" in registro
+                    ):
+                        resultado.append(registro)
+
+        return resultado
+
+    def _aplicar_recaudos_af(
+        self,
+        numero_factura: str,
+        factura: Dict[str, Any],
+    ) -> None:
+        """Hace coincidir el total RIPS con copago/cuota del archivo AF.
+
+        Los RIPS planos pueden informar el recaudo solo en AF y dejar cero en
+        todos los registros AC/AP/AM/AT. En el JSON vigente el total debe
+        aparecer en los detalles de servicios, por lo que se registra una sola
+        vez por concepto y se evita duplicarlo.
+        """
+        factura_normalizada = normalizar_factura(numero_factura)
+        recaudos = self._recaudos_af_actuales.get(
+            factura_normalizada,
+            {"01": 0, "02": 0},
+        )
+
+        objetivos = [
+            (codigo, int(valor))
+            for codigo, valor in recaudos.items()
+            if int(valor) > 0
+        ]
+
+        registros = self._registros_con_recaudo(factura)
+        total_existente = sum(
+            int(registro.get("valorPagoModerador") or 0)
+            for registro in registros
+        )
+        total_af = sum(valor for _, valor in objetivos)
+
+        if total_existente not in (0, total_af):
+            raise ValueError(
+                f"{factura_normalizada}: el total de pagos moderadores "
+                f"en los servicios ({total_existente}) no coincide con "
+                f"el archivo AF ({total_af})."
+            )
+
+        if len(registros) < len(objetivos):
+            raise ValueError(
+                f"{factura_normalizada}: no existen suficientes servicios "
+                "para informar separadamente los conceptos de recaudo del AF."
+            )
+
+        # Se reconstruye para evitar duplicados o clasificaciones antiguas.
+        for registro in registros:
+            registro["conceptoRecaudo"] = "05"
+            registro["valorPagoModerador"] = 0
+            registro["numFEVPagoModerador"] = None
+
+        for registro, (concepto, valor) in zip(registros, objetivos):
+            registro["conceptoRecaudo"] = concepto
+            registro["valorPagoModerador"] = valor
+            registro["numFEVPagoModerador"] = factura_normalizada
+
+        if objetivos:
+            descripcion = ", ".join(
+                (
+                    "COPAGO" if concepto == "01" else "CUOTA_MODERADORA"
+                )
+                + f"={valor}"
+                for concepto, valor in objetivos
+            )
+            self.advertencias.append(
+                f"{factura_normalizada}: recaudos AF aplicados una sola "
+                f"vez en los detalles RIPS: {descripcion}."
+            )
 
     def _ajustar_consultas(
         self,
@@ -1289,6 +2041,8 @@ class CreadorJsonRipsSura(CreadorJsonRips):
         ).strip()
 
         cups_sin_servicio = []
+        cups_sin_regla = []
+        cups_actualizados = []
         procedimientos_sin_diagnostico = []
         documento_paciente_retirado = False
 
@@ -1296,10 +2050,42 @@ class CreadorJsonRipsSura(CreadorJsonRips):
             procedimientos,
             start=1,
         ):
-            cups = str(
+            cups_original = str(
                 procedimiento.get("codProcedimiento") or ""
             ).strip()
+            cups = cups_original
+
+            equivalencia = MAPA_CUPS_EQUIVALENTES_VIGENTES.get(
+                cups_original
+            )
+            if equivalencia:
+                cups = equivalencia["codigo"]
+                procedimiento["codProcedimiento"] = cups
+                cups_actualizados.append(
+                    (
+                        cups_original,
+                        cups,
+                        equivalencia["descripcion"],
+                    )
+                )
+
             configuracion = MAPA_CUPS_SERVICIO_SURA.get(cups)
+
+            registro_cups = None
+            configuracion_catalogo = None
+
+            if configuracion is None:
+                registro_cups = self.catalogo_cups.obtener(cups)
+
+                if registro_cups is not None:
+                    configuracion_catalogo = (
+                        self.catalogo_cups.resolver_servicio(cups)
+                    )
+                    if (
+                        configuracion_catalogo
+                        and not configuracion_catalogo.get("sinRegla")
+                    ):
+                        configuracion = configuracion_catalogo
 
             codigo_actual = procedimiento.get("codServicio")
             try:
@@ -1320,8 +2106,18 @@ class CreadorJsonRipsSura(CreadorJsonRips):
                 procedimiento["finalidadTecnologiaSalud"] = str(
                     configuracion["finalidadTecnologiaSalud"]
                 )
-            elif not codigo_actual_valido:
-                cups_sin_servicio.append(cups or f"registro {indice}")
+            elif registro_cups is not None:
+                cups_sin_regla.append(
+                    (
+                        cups,
+                        registro_cups.get("Nombre", ""),
+                        registro_cups.get("Categoria", ""),
+                    )
+                )
+            else:
+                cups_sin_servicio.append(
+                    cups or f"registro {indice}"
+                )
 
             diagnostico_actual = str(
                 procedimiento.get("codDiagnosticoPrincipal") or ""
@@ -1376,10 +2172,27 @@ class CreadorJsonRipsSura(CreadorJsonRips):
         if cups_sin_servicio:
             cups_unicos = sorted(set(cups_sin_servicio))
             raise ValueError(
-                f"{factura}: no existe equivalencia codServicio para "
-                "estos CUPS: "
+                "CUPS inexistentes o no habilitados en "
+                "TablaReferencia_CUPS.xlsx: "
                 + ", ".join(cups_unicos)
-                + ". Agréguelos a MAPA_CUPS_SERVICIO_SURA."
+            )
+
+        if cups_sin_regla:
+            detalles = []
+            vistos = set()
+
+            for codigo, nombre, categoria in cups_sin_regla:
+                if codigo in vistos:
+                    continue
+                vistos.add(codigo)
+                detalles.append(
+                    f"{codigo} ({nombre}; categoría: {categoria})"
+                )
+
+            raise ValueError(
+                "CUPS existentes en la tabla, pero sin una regla segura "
+                "para asignar codServicio: "
+                + " | ".join(detalles)
             )
 
         if procedimientos_sin_diagnostico:
@@ -1390,6 +2203,23 @@ class CreadorJsonRipsSura(CreadorJsonRips):
                 f"{factura}: no fue posible obtener el diagnóstico "
                 "principal para estos procedimientos: "
                 + ", ".join(cups_unicos)
+            )
+
+        if cups_actualizados:
+            equivalencias_unicas = []
+            vistos_equivalencias = set()
+            for anterior, vigente, descripcion in cups_actualizados:
+                clave = (anterior, vigente)
+                if clave in vistos_equivalencias:
+                    continue
+                vistos_equivalencias.add(clave)
+                equivalencias_unicas.append(
+                    f"{anterior} -> {vigente} ({descripcion})"
+                )
+
+            self.advertencias.append(
+                f"{factura}: se actualizaron CUPS históricos: "
+                + ", ".join(equivalencias_unicas)
             )
 
         if documento_paciente_retirado:
@@ -1504,6 +2334,7 @@ class CreadorJsonRipsSura(CreadorJsonRips):
         )
 
         medicamentos_actualizados: List[Dict[str, Any]] = []
+        medicamentos_sin_codigo_valido: List[str] = []
 
         for indice, medicamento in enumerate(medicamentos, start=1):
             codigo_original = str(
@@ -1563,11 +2394,11 @@ class CreadorJsonRipsSura(CreadorJsonRips):
             # Los datos clínicos y de presentación se toman del AM.
             # No se reemplazan por valores fijos cuando la fuente ya los trae.
             nombre_tecnologia = nombre_original or None
-            concentracion = _extraer_concentracion_am(
-                medicamento.get("concentracionMedicamento")
-            )
-            unidad_medida = _codigo_unidad_medida_am(
-                medicamento.get("unidadMedida")
+            concentracion, unidad_medida = (
+                _normalizar_concentracion_unidad_am(
+                    medicamento.get("concentracionMedicamento"),
+                    medicamento.get("unidadMedida"),
+                )
             )
             forma_farmaceutica = _forma_farmaceutica_am(
                 medicamento.get("formaFarmaceutica")
@@ -1651,7 +2482,20 @@ class CreadorJsonRipsSura(CreadorJsonRips):
                 ).to_dict()
             )
 
+            if decision["estado"] == "SIN_COINCIDENCIA":
+                medicamentos_sin_codigo_valido.append(
+                    f"{nombre_original} ({codigo_original or 'SIN CODIGO'})"
+                )
+
         servicios["medicamentos"] = medicamentos_actualizados
+
+        if medicamentos_sin_codigo_valido:
+            raise ValueError(
+                "Medicamentos sin IUM o CUM válido en la tabla: "
+                + ", ".join(medicamentos_sin_codigo_valido)
+                + ". Se requiere el CUM/IUM exacto del producto; no se "
+                "reemplazó por otra concentración o forma farmacéutica."
+            )
 
         if self.numero_documento_profesional:
             self.advertencias.append(
@@ -1659,89 +2503,143 @@ class CreadorJsonRipsSura(CreadorJsonRips):
                 f"CC {self.numero_documento_profesional} al profesional."
             )
 
+    def _procesar_factura_sura(
+        self,
+        numero_factura: str,
+        factura: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Procesa una sola factura manteniendo la auditoría completa.
+
+        Primero se revisan todos los medicamentos. Después se validan
+        régimen, consultas, procedimientos y demás servicios. De esta forma,
+        si la factura falla por un CUPS o por otro dato, sus medicamentos
+        permanecen en el reporte de auditoría.
+        """
+        usuarios = factura.get("usuarios", [])
+
+        # Primera fase: normalización común y auditoría de todos los AM.
+        for usuario in usuarios:
+            for nombre_lista, lista_servicios in usuario.get(
+                "servicios", {}
+            ).items():
+                for servicio in lista_servicios:
+                    if "numAutorizacion" in servicio:
+                        servicio["numAutorizacion"] = (
+                            _normalizar_autorizacion(
+                                servicio.get("numAutorizacion")
+                            )
+                        )
+                    if nombre_lista == "otrosServicios":
+                        servicio.setdefault("vrDispensacion", 0)
+                        servicio["codigoVIDA"] = None
+
+            # Los diagnósticos se normalizan antes de usarlos como
+            # contexto de medicamentos y procedimientos.
+            self._ajustar_diagnosticos_sura(
+                numero_factura,
+                usuario,
+            )
+
+            # Debe ejecutarse antes de cualquier validación que pueda
+            # detener la factura.
+            self._ajustar_medicamentos(
+                numero_factura,
+                usuario,
+            )
+
+        # Segunda fase: validaciones y ajustes restantes.
+        regimen_factura = self._regimen_de_factura(numero_factura)
+
+        for usuario in usuarios:
+            tipo_actual = str(
+                usuario.get("tipoUsuario") or ""
+            ).zfill(2)
+
+            if regimen_factura == "contributivo":
+                usuario["tipoUsuario"] = (
+                    tipo_actual
+                    if tipo_actual in ("01", "02", "03")
+                    else "01"
+                )
+            else:
+                usuario["tipoUsuario"] = "04"
+
+            self._ajustar_consultas(
+                numero_factura,
+                usuario,
+            )
+            self._ajustar_procedimientos(
+                numero_factura,
+                usuario,
+            )
+            self._ajustar_fechas_otros_servicios(
+                numero_factura,
+                usuario,
+            )
+            self._aplicar_documento_profesional(
+                numero_factura,
+                usuario,
+            )
+
+        return factura
+
     def generar_desde_zip(
         self,
         zip_bytes: bytes,
     ) -> Dict[str, Dict[str, Any]]:
         self.ultimo_reporte_ium = []
         self.advertencias = []
+        self.errores_factura = []
+        self._recaudos_af_actuales = _extraer_recaudos_af_sura(
+            zip_bytes
+        )
 
-        facturas = super().generar_desde_zip(zip_bytes)
+        facturas_origen = super().generar_desde_zip(zip_bytes)
+        facturas_validas: Dict[str, Dict[str, Any]] = {}
 
-        facturas_sin_xml = [
-            normalizar_factura(numero_factura)
-            for numero_factura in facturas
-            if (
-                not self.regimen
-                and normalizar_factura(numero_factura)
-                not in self.regimen_por_factura
-            )
-        ]
-        if facturas_sin_xml:
-            raise ValueError(
-                "Faltan XML corregidos para estas facturas: "
-                + ", ".join(sorted(facturas_sin_xml))
-            )
+        for numero_factura, factura_origen in facturas_origen.items():
+            factura_normalizada = normalizar_factura(numero_factura)
 
-        for numero_factura, factura in facturas.items():
-            regimen_factura = self._regimen_de_factura(
-                numero_factura
-            )
+            inicio_reporte_ium = len(self.ultimo_reporte_ium)
+            inicio_advertencias = len(self.advertencias)
 
-            for usuario in factura.get("usuarios", []):
-                tipo_actual = str(
-                    usuario.get("tipoUsuario") or ""
-                ).zfill(2)
+            try:
+                factura_trabajo = copy.deepcopy(factura_origen)
+                factura_lista = self._procesar_factura_sura(
+                    factura_normalizada,
+                    factura_trabajo,
+                )
+                self._aplicar_recaudos_af(
+                    factura_normalizada,
+                    factura_lista,
+                )
+                facturas_validas[factura_normalizada] = factura_lista
 
-                if regimen_factura == "contributivo":
-                    # El XML identifica el régimen. Cuando el RIPS ya
-                    # distingue cotizante/beneficiario/adicional,
-                    # se conserva 01, 02 o 03.
-                    usuario["tipoUsuario"] = (
-                        tipo_actual
-                        if tipo_actual in ("01", "02", "03")
-                        else "01"
-                    )
-                else:
-                    usuario["tipoUsuario"] = "04"
+                for registro in self.ultimo_reporte_ium[
+                    inicio_reporte_ium:
+                ]:
+                    registro["factura_generada"] = "SI"
+                    registro["error_factura"] = ""
 
-                for nombre_lista, lista_servicios in usuario.get(
-                    "servicios", {}
-                ).items():
-                    for servicio in lista_servicios:
-                        if "numAutorizacion" in servicio:
-                            servicio["numAutorizacion"] = (
-                                _normalizar_autorizacion(
-                                    servicio.get("numAutorizacion")
-                                )
-                            )
-                        if nombre_lista == "otrosServicios":
-                            servicio.setdefault("vrDispensacion", 0)
-                            servicio["codigoVIDA"] = None
+            except Exception as exc:
+                error_texto = str(exc)
 
-                self._ajustar_consultas(
-                    numero_factura,
-                    usuario,
+                # Se retiran advertencias parciales, pero NO la auditoría de
+                # medicamentos producida antes del error.
+                del self.advertencias[inicio_advertencias:]
+
+                for registro in self.ultimo_reporte_ium[
+                    inicio_reporte_ium:
+                ]:
+                    registro["factura_generada"] = "NO"
+                    registro["error_factura"] = error_texto
+
+                self.errores_factura.append(
+                    {
+                        "factura": factura_normalizada,
+                        "error": error_texto,
+                    }
                 )
 
-                self._ajustar_procedimientos(
-                    numero_factura,
-                    usuario,
-                )
+        return facturas_validas
 
-                self._ajustar_medicamentos(
-                    numero_factura,
-                    usuario,
-                )
-
-                self._ajustar_fechas_otros_servicios(
-                    numero_factura,
-                    usuario,
-                )
-
-                self._aplicar_documento_profesional(
-                    numero_factura,
-                    usuario,
-                )
-
-        return facturas

@@ -12,6 +12,9 @@ Ejecutar:
 
 from __future__ import annotations
 
+import csv
+import hashlib
+import importlib.util
 import io
 import os
 import sys
@@ -41,10 +44,113 @@ from corrector_xml import (  # noqa: E402
 )
 from generador_json import CreadorJsonRips, normalizar_factura  # noqa: E402
 from limpiador_rips_sura import limpiar_zip_sura  # noqa: E402
-from corrector_xml_sura import corregir_xml_sura  # noqa: E402
-from generador_json_sura import (  # noqa: E402
-    CreadorJsonRipsSura,
-    extraer_factura_regimen_xml_sura,
+def _cargar_corrector_sura_desde_archivo():
+    ruta = os.path.join(
+        RUTA_CORRECTOR,
+        "corrector_xml_sura.py",
+    )
+
+    if not os.path.exists(ruta):
+        raise FileNotFoundError(
+            "No se encontró Corrector Xml/corrector_xml_sura.py"
+        )
+
+    with open(ruta, "rb") as archivo:
+        contenido = archivo.read()
+
+    huella = hashlib.sha256(contenido).hexdigest()[:12]
+    nombre_modulo = f"_corrector_xml_sura_{huella}"
+
+    modulo = sys.modules.get(nombre_modulo)
+    if modulo is not None:
+        return modulo, ruta
+
+    especificacion = importlib.util.spec_from_file_location(
+        nombre_modulo,
+        ruta,
+    )
+    if especificacion is None or especificacion.loader is None:
+        raise ImportError(
+            f"No fue posible cargar el corrector SURA desde {ruta}"
+        )
+
+    modulo = importlib.util.module_from_spec(especificacion)
+    sys.modules[nombre_modulo] = modulo
+    especificacion.loader.exec_module(modulo)
+    return modulo, ruta
+
+
+_modulo_corrector_sura, RUTA_CORRECTOR_SURA_ACTIVO = (
+    _cargar_corrector_sura_desde_archivo()
+)
+corregir_xml_sura = _modulo_corrector_sura.corregir_xml_sura
+extraer_numero_factura_xml_sura = (
+    _modulo_corrector_sura.extraer_numero_factura_xml_sura
+)
+consolidar_recaudos_rips = (
+    _modulo_corrector_sura.consolidar_recaudos_rips
+)
+ResultadoCorreccionSura = (
+    _modulo_corrector_sura.ResultadoCorreccionSura
+)
+VERSION_CORRECTOR_XML_SURA = getattr(
+    _modulo_corrector_sura,
+    "VERSION_CORRECTOR_XML_SURA",
+    "SIN_VERSION",
+)
+def _cargar_generador_sura_desde_archivo():
+    """Carga siempre el archivo exacto de la carpeta Generador Json.
+
+    El nombre interno incluye el hash del archivo. Así Streamlit no reutiliza
+    una versión anterior guardada en sys.modules cuando el código se reemplaza.
+    """
+    ruta = os.path.join(
+        RUTA_GENERADOR,
+        "generador_json_sura.py",
+    )
+
+    if not os.path.exists(ruta):
+        raise FileNotFoundError(
+            "No se encontró Generador Json/generador_json_sura.py"
+        )
+
+    with open(ruta, "rb") as archivo:
+        contenido = archivo.read()
+
+    huella = hashlib.sha256(contenido).hexdigest()[:12]
+    nombre_modulo = f"_generador_json_sura_{huella}"
+
+    modulo = sys.modules.get(nombre_modulo)
+    if modulo is not None:
+        return modulo, ruta
+
+    especificacion = importlib.util.spec_from_file_location(
+        nombre_modulo,
+        ruta,
+    )
+    if especificacion is None or especificacion.loader is None:
+        raise ImportError(
+            f"No fue posible cargar el generador SURA desde {ruta}"
+        )
+
+    modulo = importlib.util.module_from_spec(especificacion)
+    sys.modules[nombre_modulo] = modulo
+    especificacion.loader.exec_module(modulo)
+
+    return modulo, ruta
+
+
+_modulo_sura, RUTA_GENERADOR_SURA_ACTIVO = (
+    _cargar_generador_sura_desde_archivo()
+)
+CreadorJsonRipsSura = _modulo_sura.CreadorJsonRipsSura
+extraer_factura_regimen_xml_sura = (
+    _modulo_sura.extraer_factura_regimen_xml_sura
+)
+VERSION_GENERADOR_SURA = getattr(
+    _modulo_sura,
+    "VERSION_GENERADOR_SURA",
+    "SIN_VERSION",
 )
 
 st.set_page_config(
@@ -567,9 +673,15 @@ with tab2:
 
     else:
         st.subheader("🩺 Corrector de XML — EPS SURA")
+        st.success(
+            f"Corrector SURA activo: {VERSION_CORRECTOR_XML_SURA}"
+        )
         st.caption(
-            "Reconstruye directamente el nodo de sector salud según la "
-            "Resolución 000948 de 2026. No requiere cargar una plantilla."
+            f"Archivo cargado: {RUTA_CORRECTOR_SURA_ACTIVO}"
+        )
+        st.caption(
+            "Cruza cada XML con su factura en los RIPS antes de modificar "
+            "copagos, cuotas moderadoras, pagos compartidos y anticipos."
         )
 
         with st.expander(
@@ -580,10 +692,10 @@ with tab2:
 
             with col_pasos:
                 st.markdown(
-                    "1. Carga los XML de SURA que vas a corregir.\n"
-                    "2. Escribe el CUCON.\n"
-                    "3. Selecciona el régimen.\n"
-                    "4. Procesa y descarga los XML corregidos."
+                    "1. Carga los XML originales de SURA.\n"
+                    "2. Carga uno o varios ZIP de RIPS del mismo lote.\n"
+                    "3. Asigna Contributivo o Subsidiado a cada factura.\n"
+                    "4. Escribe el CUCON y procesa el lote completo."
                 )
 
             with col_datos:
@@ -593,7 +705,9 @@ with tab2:
                     "- Modalidad de pago por evento (`04`)\n"
                     "- Cobertura contributiva (`16`) o subsidiada (`17`)\n"
                     "- Los 14 campos del nodo Sector Salud\n"
-                    "- CUCON en `NUMERO_CONTRATO`"
+                    "- CUCON en `NUMERO_CONTRATO`\n"
+                    "- Recaudos tomados de RIPS y comparados con el XML\n"
+                    "- `PrepaidPayment` por concepto con `schemeID` válido"
                 )
 
         xmls_sura = st.file_uploader(
@@ -603,6 +717,45 @@ with tab2:
             key="xmls_sura_corregir",
         )
 
+        rips_sura_xml = st.file_uploader(
+            "ZIP de RIPS correspondientes a los XML",
+            type=["zip"],
+            accept_multiple_files=True,
+            key="rips_sura_para_xml",
+            help=(
+                "Puede cargar los ZIP planos con AF/AC o ZIP que contengan "
+                "JSON RIPS. El cruce se realiza por número de factura."
+            ),
+        )
+
+        mapa_recaudos_sura = {}
+        error_recaudos_sura = None
+
+        if rips_sura_xml:
+            try:
+                mapa_recaudos_sura = consolidar_recaudos_rips(
+                    [
+                        (archivo.name, archivo.getvalue())
+                        for archivo in rips_sura_xml
+                    ]
+                )
+                st.subheader("💰 Recaudos detectados en RIPS")
+                st.dataframe(
+                    [
+                        resumen.resumen()
+                        for _, resumen in sorted(
+                            mapa_recaudos_sura.items()
+                        )
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            except Exception as exc:
+                error_recaudos_sura = str(exc)
+                st.error(
+                    f"No fue posible analizar los RIPS: {exc}"
+                )
+
         cucon_sura = st.text_input(
             "CUCON de SURA",
             key="cucon_sura",
@@ -611,50 +764,218 @@ with tab2:
             ),
         )
 
-        regimen_sura = st.selectbox(
-            "Régimen del usuario",
-            options=["Seleccione...", "Contributivo", "Subsidiado"],
-            key="regimen_xml_sura",
-        )
+        facturas_xml_sura = []
+        errores_facturas_xml_sura = []
+        facturas_duplicadas_xml_sura = []
+        regimen_por_factura_xml_sura = {}
+
+        if xmls_sura:
+            facturas_vistas = {}
+
+            for archivo in xmls_sura:
+                try:
+                    numero_factura = extraer_numero_factura_xml_sura(
+                        archivo.getvalue()
+                    )
+                    if numero_factura in facturas_vistas:
+                        facturas_duplicadas_xml_sura.append(
+                            numero_factura
+                        )
+                    else:
+                        facturas_vistas[numero_factura] = archivo.name
+
+                    facturas_xml_sura.append(
+                        {
+                            "factura": numero_factura,
+                            "archivo": archivo.name,
+                        }
+                    )
+                except Exception as exc:
+                    errores_facturas_xml_sura.append(
+                        {
+                            "archivo": archivo.name,
+                            "error": str(exc),
+                        }
+                    )
+
+        if errores_facturas_xml_sura:
+            st.error(
+                "No fue posible identificar la factura de algunos XML."
+            )
+            st.dataframe(
+                errores_facturas_xml_sura,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        if facturas_duplicadas_xml_sura:
+            st.error(
+                "Hay números de factura repetidos entre los XML: "
+                + ", ".join(
+                    sorted(set(facturas_duplicadas_xml_sura))
+                )
+            )
+
+        if facturas_xml_sura:
+            st.subheader("🧾 Régimen por factura")
+            st.caption(
+                "Asigna el régimen de cada XML. Los botones masivos sirven "
+                "como punto de partida y luego puedes cambiar facturas "
+                "individuales."
+            )
+
+            col_todas_contributivas, col_todas_subsidiadas = st.columns(2)
+
+            if col_todas_contributivas.button(
+                "Marcar todas como Contributivas",
+                use_container_width=True,
+                key="xml_sura_todas_contributivas",
+            ):
+                for item in facturas_xml_sura:
+                    st.session_state[
+                        f"regimen_xml_sura_{item['factura']}"
+                    ] = "Contributivo"
+
+            if col_todas_subsidiadas.button(
+                "Marcar todas como Subsidiadas",
+                use_container_width=True,
+                key="xml_sura_todas_subsidiadas",
+            ):
+                for item in facturas_xml_sura:
+                    st.session_state[
+                        f"regimen_xml_sura_{item['factura']}"
+                    ] = "Subsidiado"
+
+            for item in facturas_xml_sura:
+                factura = item["factura"]
+                archivo_nombre = item["archivo"]
+                clave_regimen = f"regimen_xml_sura_{factura}"
+
+                if clave_regimen not in st.session_state:
+                    st.session_state[clave_regimen] = "Seleccione..."
+
+                columna_factura, columna_regimen = st.columns([1.35, 1])
+                with columna_factura:
+                    st.markdown(f"**{factura}**")
+                    st.caption(archivo_nombre)
+
+                with columna_regimen:
+                    seleccion = st.selectbox(
+                        f"Régimen de {factura}",
+                        options=[
+                            "Seleccione...",
+                            "Contributivo",
+                            "Subsidiado",
+                        ],
+                        key=clave_regimen,
+                        label_visibility="collapsed",
+                    )
+
+                regimen_por_factura_xml_sura[factura] = seleccion
 
         if not xmls_sura:
             st.info("👆 Carga uno o varios XML de SURA para corregir.")
+        elif not rips_sura_xml:
+            st.info(
+                "👆 Carga también los ZIP de RIPS correspondientes."
+            )
         elif st.button(
             "🚀 Corregir XML SURA",
             type="primary",
             use_container_width=True,
         ):
+            regimenes_sin_definir_xml_sura = [
+                factura
+                for factura, regimen in regimen_por_factura_xml_sura.items()
+                if regimen == "Seleccione..."
+            ]
+
             if not cucon_sura.strip() or cucon_sura.strip() == "0":
                 st.error("Escriba un CUCON válido.")
-            elif regimen_sura == "Seleccione...":
+            elif errores_facturas_xml_sura:
                 st.error(
-                    "Seleccione si el usuario es Contributivo o Subsidiado."
+                    "Corrige primero los XML cuyo número de factura no "
+                    "pudo identificarse."
+                )
+            elif facturas_duplicadas_xml_sura:
+                st.error(
+                    "Retira los XML duplicados antes de continuar."
+                )
+            elif regimenes_sin_definir_xml_sura:
+                st.error(
+                    "Selecciona el régimen de estas facturas: "
+                    + ", ".join(regimenes_sin_definir_xml_sura)
+                )
+            elif error_recaudos_sura:
+                st.error(
+                    "Corrija primero el error detectado en los RIPS."
                 )
             else:
                 resultados_xml_sura = []
-                barra = st.progress(0, text="Corrigiendo XML SURA...")
+                barra = st.progress(0, text="Cruzando XML y RIPS...")
 
                 for indice, archivo in enumerate(xmls_sura):
-                    resultado = corregir_xml_sura(
-                        xml_bytes=archivo.getvalue(),
-                        cucon=cucon_sura,
-                        nombre=archivo.name,
-                        regimen=regimen_sura.lower(),
-                    )
+                    try:
+                        factura_xml = extraer_numero_factura_xml_sura(
+                            archivo.getvalue()
+                        )
+                        recaudo_factura = mapa_recaudos_sura.get(
+                            factura_xml
+                        )
+
+                        if recaudo_factura is None:
+                            resultado = ResultadoCorreccionSura(
+                                nombre=archivo.name,
+                                ok=False,
+                                mensaje=(
+                                    f"{factura_xml}: no se encontró esta "
+                                    "factura en los ZIP de RIPS cargados."
+                                ),
+                            )
+                        else:
+                            regimen_factura = (
+                                regimen_por_factura_xml_sura[
+                                    factura_xml
+                                ].lower()
+                            )
+                            resultado = corregir_xml_sura(
+                                xml_bytes=archivo.getvalue(),
+                                cucon=cucon_sura,
+                                nombre=archivo.name,
+                                regimen=regimen_factura,
+                                recaudo_rips=recaudo_factura,
+                            )
+                    except Exception as exc:
+                        resultado = ResultadoCorreccionSura(
+                            nombre=archivo.name,
+                            ok=False,
+                            mensaje=str(exc),
+                        )
+
                     resultados_xml_sura.append(resultado)
                     barra.progress(
                         (indice + 1) / len(xmls_sura),
-                        text=f"Corregido {archivo.name}",
+                        text=f"Procesado {archivo.name}",
                     )
 
                 barra.empty()
                 st.session_state.resultados_xml_sura = (
                     resultados_xml_sura
                 )
+                st.session_state.regimen_resultados_xml_sura = {
+                    item["archivo"]: regimen_por_factura_xml_sura[
+                        item["factura"]
+                    ]
+                    for item in facturas_xml_sura
+                }
 
         resultados_xml_sura = st.session_state.get(
             "resultados_xml_sura",
             [],
+        )
+        regimen_resultados_xml_sura = st.session_state.get(
+            "regimen_resultados_xml_sura",
+            {},
         )
         if resultados_xml_sura:
             for resultado in resultados_xml_sura:
@@ -663,6 +984,16 @@ with tab2:
                     f"{'✅' if resultado.ok else '❌'}",
                     expanded=True,
                 ):
+                    regimen_aplicado = (
+                        regimen_resultados_xml_sura.get(
+                            resultado.nombre,
+                            "No identificado",
+                        )
+                    )
+                    st.caption(
+                        f"Régimen aplicado: {regimen_aplicado}"
+                    )
+
                     if not resultado.ok:
                         st.error(resultado.mensaje)
                         continue
@@ -688,6 +1019,88 @@ with tab2:
                             mime="application/xml",
                             key=f"xml_sura_{resultado.nombre}",
                         )
+
+            correctos_sura = [
+                resultado
+                for resultado in resultados_xml_sura
+                if resultado.ok and resultado.xml_bytes
+            ]
+            if correctos_sura:
+                st.divider()
+                st.subheader("📦 Descarga masiva")
+
+                def _crear_zip_xml_sura(resultados):
+                    paquete = io.BytesIO()
+                    with zipfile.ZipFile(
+                        paquete,
+                        "w",
+                        zipfile.ZIP_DEFLATED,
+                    ) as salida:
+                        for resultado_zip in resultados:
+                            nombre_base = os.path.splitext(
+                                resultado_zip.nombre
+                            )[0]
+                            salida.writestr(
+                                f"{nombre_base}_SURA_corregido.xml",
+                                resultado_zip.xml_bytes,
+                            )
+                    return paquete.getvalue()
+
+                contributivos_sura = [
+                    resultado
+                    for resultado in correctos_sura
+                    if regimen_resultados_xml_sura.get(
+                        resultado.nombre
+                    ) == "Contributivo"
+                ]
+                subsidiados_sura = [
+                    resultado
+                    for resultado in correctos_sura
+                    if regimen_resultados_xml_sura.get(
+                        resultado.nombre
+                    ) == "Subsidiado"
+                ]
+
+                st.download_button(
+                    label=(
+                        "⬇️ Descargar todos los XML SURA correctos "
+                        f"({len(correctos_sura)})"
+                    ),
+                    data=_crear_zip_xml_sura(correctos_sura),
+                    file_name="XML_SURA_CORREGIDOS_TODOS.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                )
+
+                columna_contributivo, columna_subsidiado = st.columns(2)
+
+                if contributivos_sura:
+                    columna_contributivo.download_button(
+                        label=(
+                            "⬇️ Contributivos "
+                            f"({len(contributivos_sura)})"
+                        ),
+                        data=_crear_zip_xml_sura(contributivos_sura),
+                        file_name=(
+                            "XML_SURA_CORREGIDOS_CONTRIBUTIVOS.zip"
+                        ),
+                        mime="application/zip",
+                        use_container_width=True,
+                    )
+
+                if subsidiados_sura:
+                    columna_subsidiado.download_button(
+                        label=(
+                            "⬇️ Subsidiados "
+                            f"({len(subsidiados_sura)})"
+                        ),
+                        data=_crear_zip_xml_sura(subsidiados_sura),
+                        file_name=(
+                            "XML_SURA_CORREGIDOS_SUBSIDIADOS.zip"
+                        ),
+                        mime="application/zip",
+                        use_container_width=True,
+                    )
 
 # ===========================================================================
 # PESTAÑA 3 — CREADOR DE JSON (Resolución 2275 de 2023)
@@ -866,10 +1279,16 @@ with tab3:
                             st.error(f"Error durante la generación: {e}")
     else:
         st.subheader("📝 Creador de JSON RIPS — EPS SURA")
+        st.success(
+            f"Generador SURA activo: {VERSION_GENERADOR_SURA}"
+        )
         st.caption(
-            "Genera el JSON desde los RIPS limpios y revisa los medicamentos "
-            "contra TablaReferenciaIUM.xlsx. Conserva IUM válidos, limpia CUM "
-            "con ATC concatenado y selecciona el IUM habilitado más semejante."
+            f"Archivo cargado directamente: {RUTA_GENERADOR_SURA_ACTIVO}"
+        )
+        st.caption(
+            "Genera el JSON desde los RIPS limpios, conserva los datos del "
+            "AM y valida medicamentos y procedimientos con las tablas IUM "
+            "y CUPS ubicadas en Generador Json."
         )
 
         with st.expander(
@@ -891,14 +1310,15 @@ with tab3:
                 st.markdown(
                     "- `numAutorizacion` se elimina de medicamentos\n"
                     "- IUM existente y habilitado: se conserva\n"
+                    "- Nombre, concentración, unidad, cantidad y valores "
+                    "se toman del archivo AM\n"
                     "- Varias presentaciones: se elige la más semejante\n"
-                    "- No magistrales: nombre y forma en `null`; "
-                    "concentración y unidad en `0`\n"
                     "- `vrDispensacion` queda en `0` y `codigoVIDA` en `null`"
                 )
                 st.caption(
-                    "La tabla debe estar en "
-                    "`Generador Json/TablaReferenciaIUM.xlsx`."
+                    "Las tablas deben estar en "
+                    "`Generador Json/TablaReferenciaIUM.xlsx` y "
+                    "`Generador Json/TablaReferencia_CUPS.xlsx`."
                 )
 
         xmls_regimen_sura = st.file_uploader(
@@ -1023,17 +1443,18 @@ with tab3:
             elif not zip_files_json_sura:
                 st.error("Cargue al menos un ZIP de RIPS de SURA.")
             else:
-                try:
-                    all_jsons_sura = {}
-                    reporte_ium_sura = []
-                    advertencias_sura = []
+                all_jsons_sura = {}
+                reporte_ium_sura = []
+                advertencias_sura = []
+                errores_factura_sura = []
 
-                    barra = st.progress(
-                        0,
-                        text="Generando JSON y revisando medicamentos...",
-                    )
+                barra = st.progress(
+                    0,
+                    text="Generando JSON y revisando facturas...",
+                )
 
-                    for indice, archivo in enumerate(zip_files_json_sura):
+                for indice, archivo in enumerate(zip_files_json_sura):
+                    try:
                         creador_sura = CreadorJsonRipsSura(
                             regimen_por_factura=mapa_regimen_sura,
                             numero_documento_profesional=(
@@ -1051,21 +1472,36 @@ with tab3:
                         advertencias_sura.extend(
                             creador_sura.advertencias
                         )
-
-                        barra.progress(
-                            (indice + 1) / len(zip_files_json_sura),
-                            text=f"Procesado {archivo.name}",
+                        errores_factura_sura.extend(
+                            creador_sura.errores_factura
                         )
 
-                    barra.empty()
-                    st.session_state.jsons_sura = all_jsons_sura
-                    st.session_state.reporte_ium_sura = reporte_ium_sura
-                    st.session_state.advertencias_json_sura = (
-                        advertencias_sura
+                    except Exception as exc:
+                        # Error del ZIP completo: no detiene los demás ZIP.
+                        errores_factura_sura.append(
+                            {
+                                "factura": archivo.name,
+                                "error": (
+                                    "No fue posible procesar este ZIP: "
+                                    f"{exc}"
+                                ),
+                            }
+                        )
+
+                    barra.progress(
+                        (indice + 1) / len(zip_files_json_sura),
+                        text=f"Procesado {archivo.name}",
                     )
 
-                except Exception as exc:
-                    st.error(f"Error durante la generación SURA: {exc}")
+                barra.empty()
+                st.session_state.jsons_sura = all_jsons_sura
+                st.session_state.reporte_ium_sura = reporte_ium_sura
+                st.session_state.advertencias_json_sura = (
+                    advertencias_sura
+                )
+                st.session_state.errores_factura_json_sura = (
+                    errores_factura_sura
+                )
 
         all_jsons_sura = st.session_state.get("jsons_sura", {})
         reporte_ium_sura = st.session_state.get(
@@ -1076,31 +1512,102 @@ with tab3:
             "advertencias_json_sura",
             [],
         )
+        errores_factura_sura = st.session_state.get(
+            "errores_factura_json_sura",
+            [],
+        )
+
+        if errores_factura_sura:
+            st.error(
+                f"❌ {len(errores_factura_sura)} factura(s) no se "
+                "generaron porque tienen datos incompletos."
+            )
+            st.dataframe(
+                errores_factura_sura,
+                use_container_width=True,
+                hide_index=True,
+                column_order=["factura", "error"],
+            )
+
+            reporte_errores = "\n".join(
+                f"{item['factura']}: {item['error']}"
+                for item in errores_factura_sura
+            )
+            st.download_button(
+                label="⬇️ Descargar reporte de errores SURA",
+                data=reporte_errores,
+                file_name="ERRORES_GENERACION_SURA.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+
+        if reporte_ium_sura:
+            st.subheader("💊 Auditoría IUM/CUM completa")
+            st.caption(
+                "Incluye medicamentos de facturas generadas y de facturas "
+                "excluidas por errores en CUPS, XML u otros datos."
+            )
+            st.dataframe(
+                reporte_ium_sura,
+                use_container_width=True,
+                hide_index=True,
+                column_order=[
+                    "factura",
+                    "factura_generada",
+                    "error_factura",
+                    "medicamento",
+                    "codigo_original",
+                    "codigo_final",
+                    "estado",
+                    "detalle",
+                    "candidatos",
+                ],
+            )
+
+            columnas_exportar = [
+                "factura",
+                "factura_generada",
+                "error_factura",
+                "medicamento",
+                "codigo_original",
+                "codigo_final",
+                "estado",
+                "detalle",
+                "candidatos",
+            ]
+            lineas_csv = []
+            salida_csv = io.StringIO()
+            escritor_csv = csv.DictWriter(
+                salida_csv,
+                fieldnames=columnas_exportar,
+                extrasaction="ignore",
+            )
+            escritor_csv.writeheader()
+            escritor_csv.writerows(reporte_ium_sura)
+
+            st.download_button(
+                label="⬇️ Descargar auditoría completa de medicamentos",
+                data=salida_csv.getvalue().encode("utf-8-sig"),
+                file_name="AUDITORIA_MEDICAMENTOS_SURA.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
 
         if all_jsons_sura:
             st.success(
-                f"✅ Se generaron {len(all_jsons_sura)} facturas JSON de SURA."
+                f"✅ Se generaron correctamente "
+                f"{len(all_jsons_sura)} factura(s) JSON de SURA."
             )
 
-            for advertencia in advertencias_sura:
-                st.warning(advertencia)
-
-            if reporte_ium_sura:
-                st.subheader("💊 Auditoría IUM/CUM")
-                st.dataframe(
-                    reporte_ium_sura,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_order=[
-                        "factura",
-                        "medicamento",
-                        "codigo_original",
-                        "codigo_final",
-                        "estado",
-                        "detalle",
-                        "candidatos",
-                    ],
+            if advertencias_sura:
+                st.subheader("⚠️ Pendientes y revisiones")
+                st.caption(
+                    "Estas advertencias no detuvieron la generación. "
+                    "Revísalas antes de enviar los archivos al Ministerio."
                 )
+
+                for advertencia in advertencias_sura:
+                    st.warning(advertencia)
 
             st.divider()
             st.subheader("📄 JSON generados")
