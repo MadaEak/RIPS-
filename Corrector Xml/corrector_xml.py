@@ -27,8 +27,11 @@ import csv
 import io
 import os
 import re
+import unicodedata
+import zipfile
 from dataclasses import dataclass, field
-from typing import List, Optional
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from lxml import etree
 
@@ -108,6 +111,51 @@ NO_SOBRESCRIBIR = {
 # Tag local que envuelve la factura embebida dentro del Description
 RE_INVOICE = re.compile(r"<Invoice\b.*?</Invoice>", re.DOTALL)
 
+VERSION_CORRECTOR_XML_MUTUAL = (
+    "2026.07.19-v4-descripciones-at-truncadas"
+)
+
+TRATAMIENTOS_CONTRATADOS_MUTUAL: Dict[str, Dict[str, Any]] = {
+    "132P01": {
+        "descripcion": (
+            "INTERNACIÓN PARCIAL EN HOSPITAL (HOSPITAL DÍA) "
+            "PSIQUIATRÍA GENERAL"
+        ),
+        "obligatorias": ("INTERNACION", "PARCIAL"),
+        "alternativas": (
+            ("HOSPITAL", "HOSPITALARIA", "INSTITUCION"),
+            ("PSIQUIATRIA", "HOSPITAL DIA", "INSTITUCION HOSPITALARIA"),
+        ),
+    },
+    "135M02": {
+        "descripcion": (
+            "INTERNACIÓN HOSPITALARIA EN EL CONSUMIDOR DE "
+            "SUSTANCIAS PSICOACTIVAS"
+        ),
+        "obligatorias": ("INTERNACION",),
+        "alternativas": (
+            (
+                "SUSTANCIAS PSICOACTIVAS",
+                "CONSUMO DE SUSTANCIAS",
+                "FARMACODEPENDENCIA",
+            ),
+            ("HOSPITALARIA", "COMPLEJIDAD MEDIANA", "HABITACION MULTIPLE"),
+        ),
+    },
+    "131M02": {
+        "descripcion": (
+            "INTERNACIÓN EN UNIDAD DE SALUD MENTAL, "
+            "COMPLEJIDAD MEDIANA"
+        ),
+        "obligatorias": (
+            "INTERNACION",
+            "SALUD MENTAL",
+            "COMPLEJIDAD MEDIANA",
+        ),
+        "alternativas": (("UNIDAD",),),
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Utilidades de rutas
@@ -141,6 +189,41 @@ class ResultadoCorreccion:
     # Para diff/preview
     invoice_original: str = ""
     invoice_corregido: str = ""
+
+
+@dataclass
+class ResultadoValidacionMutual:
+    nombre: str
+    factura: str = ""
+    ok: bool = False
+    estado: str = "PENDIENTE"
+    autorizaciones_xml: str = ""
+    autorizaciones_at: str = ""
+    autorizacion_csv: str = ""
+    estado_autorizacion: str = ""
+    codigo_xml: str = ""
+    codigo_at: str = ""
+    tratamiento_esperado: str = ""
+    descripcion_xml: str = ""
+    descripcion_at: str = ""
+    mensaje: str = ""
+    detalles: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "archivo": self.nombre,
+            "factura": self.factura,
+            "estado": self.estado,
+            "autorización XML": self.autorizaciones_xml,
+            "autorización AT": self.autorizaciones_at,
+            "autorización CSV EPS": self.autorizacion_csv,
+            "estado autorización": self.estado_autorizacion,
+            "código XML": self.codigo_xml,
+            "código AT": self.codigo_at,
+            "tratamiento contratado": self.tratamiento_esperado,
+            "descripción AT": self.descripcion_at,
+            "observación": self.mensaje,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -696,6 +779,628 @@ def _extraer_identificadores_xml(xml_bytes: bytes):
     return documentos, autorizaciones
 
 
+
+def _normalizar_texto_contrato(valor: Any) -> str:
+    texto = "" if valor is None else str(valor)
+    texto = "".join(
+        caracter
+        for caracter in unicodedata.normalize("NFD", texto)
+        if unicodedata.category(caracter) != "Mn"
+    )
+    texto = texto.upper()
+    texto = re.sub(r"[^A-Z0-9]+", " ", texto)
+    return " ".join(texto.split())
+
+
+def _normalizar_codigo_tecnologia(valor: Any) -> str:
+    return re.sub(r"[^A-Z0-9]", "", _normalizar_texto_contrato(valor))
+
+
+def _variantes_autorizacion(valor: Any) -> set[str]:
+    digitos = re.sub(r"\D", "", str(valor or ""))
+    if not digitos or set(digitos) == {"0"}:
+        return set()
+
+    variantes = {digitos}
+    if len(digitos) > 7:
+        variantes.add(digitos[-7:])
+    return variantes
+
+
+def _separar_autorizaciones(valor: Any) -> set[str]:
+    resultado: set[str] = set()
+    for parte in re.split(r"[;,\s|]+", str(valor or "")):
+        resultado.update(_variantes_autorizacion(parte))
+    return resultado
+
+
+def _autorizaciones_mostrables(valores: set[str]) -> List[str]:
+    if not valores:
+        return []
+
+    largas = sorted(
+        {valor for valor in valores if len(valor) >= 13}
+    )
+    if largas:
+        return largas
+
+    longitud = max(len(valor) for valor in valores)
+    return sorted(
+        {valor for valor in valores if len(valor) == longitud}
+    )
+
+
+def _texto_hijo_directo(elemento, nombre_local: str) -> str:
+    for hijo in elemento:
+        if isinstance(hijo.tag, str) and _local(hijo.tag) == nombre_local:
+            return (hijo.text or "").strip()
+    return ""
+
+
+def _propiedades_item(item) -> Dict[str, str]:
+    propiedades: Dict[str, str] = {}
+    for propiedad in item.iter():
+        if not isinstance(propiedad.tag, str):
+            continue
+        if _local(propiedad.tag) != "AdditionalItemProperty":
+            continue
+
+        nombre = ""
+        valor = ""
+        for hijo in propiedad:
+            if not isinstance(hijo.tag, str):
+                continue
+            if _local(hijo.tag) == "Name":
+                nombre = _normalizar_texto_contrato(hijo.text)
+            elif _local(hijo.tag) == "Value":
+                valor = (hijo.text or "").strip()
+        if nombre:
+            propiedades[nombre] = valor
+    return propiedades
+
+
+def _extraer_datos_validacion_xml_mutual(xml_bytes: bytes) -> Dict[str, Any]:
+    root = etree.fromstring(xml_bytes)
+    desc = root.find(XP_DESCRIPTION)
+    if desc is None or not (desc.text or "").strip():
+        raise ValueError(
+            "No se encontró la factura embebida en el AttachedDocument."
+        )
+
+    invoice_text = _extraer_invoice(desc.text)
+    if not invoice_text:
+        raise ValueError("No se encontró un <Invoice> dentro del Description.")
+
+    invoice = etree.fromstring(invoice_text.encode("utf-8"))
+    factura = _texto_hijo_directo(invoice, "ID")
+    autorizaciones_globales: set[str] = set()
+
+    for ai in invoice.iter():
+        if not isinstance(ai.tag, str) or _local(ai.tag) != "AdditionalInformation":
+            continue
+        nombre = _texto_hijo_directo(ai, "Name").upper()
+        valor = _texto_hijo_directo(ai, "Value")
+        if nombre == "NUMERO_AUTORIZACION":
+            autorizaciones_globales.update(_separar_autorizaciones(valor))
+
+    for campo in invoice.iter():
+        if not isinstance(campo.tag, str) or _local(campo.tag) != "CustomField":
+            continue
+        if _normalizar_texto_contrato(campo.get("Name")) == "NUMERO AUTORIZACION":
+            autorizaciones_globales.update(
+                _separar_autorizaciones(campo.get("Value"))
+            )
+
+    lineas = []
+    for posicion, linea in enumerate(
+        [h for h in invoice if isinstance(h.tag, str) and _local(h.tag) == "InvoiceLine"],
+        start=1,
+    ):
+        numero_linea = _texto_hijo_directo(linea, "ID") or str(posicion)
+        item = next(
+            (
+                hijo
+                for hijo in linea
+                if isinstance(hijo.tag, str) and _local(hijo.tag) == "Item"
+            ),
+            None,
+        )
+        if item is None:
+            lineas.append(
+                {
+                    "linea": numero_linea,
+                    "codigo": "",
+                    "descripcion": "",
+                    "autorizaciones": set(),
+                }
+            )
+            continue
+
+        descripcion = _texto_hijo_directo(item, "Description")
+        codigo = ""
+        autorizaciones_linea: set[str] = set()
+
+        for elemento in item.iter():
+            if not isinstance(elemento.tag, str):
+                continue
+            local = _local(elemento.tag)
+            if local == "StandardItemIdentification":
+                codigo = _texto_hijo_directo(elemento, "ID") or codigo
+            elif local == "BuyersItemIdentification":
+                autorizaciones_linea.update(
+                    _separar_autorizaciones(
+                        _texto_hijo_directo(elemento, "ID")
+                    )
+                )
+
+        propiedades = _propiedades_item(item)
+        if not codigo:
+            codigo = (
+                propiedades.get("CODIGO ITEM ERP")
+                or propiedades.get("CODIGO ITEM")
+                or ""
+            )
+        if not descripcion:
+            descripcion = propiedades.get("DESCRIPCION", "")
+
+        autorizaciones_linea.update(
+            _separar_autorizaciones(
+                propiedades.get("NUMERO AUTORIZACION", "")
+            )
+        )
+
+        lineas.append(
+            {
+                "linea": numero_linea,
+                "codigo": _normalizar_codigo_tecnologia(codigo),
+                "descripcion": descripcion,
+                "autorizaciones": autorizaciones_linea,
+            }
+        )
+
+    if not lineas:
+        raise ValueError("La factura no contiene líneas de servicio.")
+
+    return {
+        "factura": factura,
+        "autorizaciones_globales": autorizaciones_globales,
+        "lineas": lineas,
+    }
+
+
+def _autorizaciones_fila_csv(fila: Dict[str, Any]) -> set[str]:
+    resultado: set[str] = set()
+    for campo in ("NUMERO_AUTORIZACION", "N_NUMERO_AUTORIZACION"):
+        resultado.update(_separar_autorizaciones(fila.get(campo)))
+    return resultado
+
+
+
+def _normalizar_factura_mutual(valor: Any) -> str:
+    return re.sub(r"\s+", "", str(valor or "")).upper()
+
+
+def _decodificar_rips_mutual(contenido: bytes) -> str:
+    for codificacion in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return contenido.decode(codificacion)
+        except UnicodeDecodeError:
+            continue
+    return contenido.decode("latin-1", errors="replace")
+
+
+def consolidar_at_mutual(
+    archivos_zip: Iterable[Tuple[str, bytes]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Lee los archivos AT de uno o varios ZIP RIPS.
+
+    Estructura AT utilizada:
+    0 factura
+    4 autorización
+    6 código de tecnología
+    7 descripción de tecnología
+    """
+    mapa: Dict[str, List[Dict[str, Any]]] = {}
+
+    for nombre_zip, contenido_zip in archivos_zip:
+        try:
+            with zipfile.ZipFile(io.BytesIO(contenido_zip)) as archivo:
+                nombres_at = [
+                    nombre
+                    for nombre in archivo.namelist()
+                    if (
+                        Path(nombre).name.upper().startswith("AT")
+                        and nombre.lower().endswith(".txt")
+                    )
+                ]
+
+                if not nombres_at:
+                    raise ValueError(
+                        f"{nombre_zip}: no contiene un archivo AT."
+                    )
+
+                for nombre_at in nombres_at:
+                    texto = _decodificar_rips_mutual(
+                        archivo.read(nombre_at)
+                    )
+                    lector = csv.reader(io.StringIO(texto))
+
+                    for numero_linea, fila in enumerate(lector, start=1):
+                        if not fila:
+                            continue
+
+                        if len(fila) < 8:
+                            raise ValueError(
+                                f"{nombre_zip}/{nombre_at}, línea "
+                                f"{numero_linea}: registro AT incompleto."
+                            )
+
+                        factura = _normalizar_factura_mutual(fila[0])
+                        if not factura:
+                            raise ValueError(
+                                f"{nombre_zip}/{nombre_at}, línea "
+                                f"{numero_linea}: factura vacía."
+                            )
+
+                        mapa.setdefault(factura, []).append(
+                            {
+                                "factura": factura,
+                                "autorizaciones": _separar_autorizaciones(
+                                    fila[4]
+                                ),
+                                "codigo": _normalizar_codigo_tecnologia(
+                                    fila[6]
+                                ),
+                                "descripcion": str(fila[7] or "").strip(),
+                                "archivo": f"{nombre_zip}/{nombre_at}",
+                                "linea": numero_linea,
+                            }
+                        )
+        except zipfile.BadZipFile as exc:
+            raise ValueError(
+                f"{nombre_zip}: no es un ZIP válido."
+            ) from exc
+
+    if not mapa:
+        raise ValueError(
+            "No se encontraron registros AT en los ZIP cargados."
+        )
+
+    return mapa
+
+
+def _descripcion_valida_para_codigo(codigo: str, descripcion: Any) -> bool:
+    """Valida la descripción AT tolerando truncamientos del sistema fuente.
+
+    Mutual puede limitar la longitud del campo y entregar, por ejemplo:
+
+    INTERNACIONHOSPITALARIAENELCONSUMIDORDESUSTANCIASPSIC
+
+    en lugar de terminar la palabra PSICOACTIVAS. Se acepta cuando la
+    descripción recibida es un prefijo suficientemente largo de la
+    descripción contractual del mismo código.
+
+    No se acepta una descripción correspondiente a otro tratamiento.
+    """
+    regla = TRATAMIENTOS_CONTRATADOS_MUTUAL.get(codigo)
+    if regla is None:
+        return False
+
+    texto = _normalizar_texto_contrato(descripcion)
+    compacto = _normalizar_codigo_tecnologia(descripcion)
+    contractual = _normalizar_codigo_tecnologia(
+        regla["descripcion"]
+    )
+
+    if not texto and not compacto:
+        return False
+
+    # Coincidencia exacta o texto contractual con información adicional.
+    if compacto == contractual or compacto.startswith(contractual):
+        return True
+
+    # Descripción truncada: debe ser un prefijo inequívoco y conservar
+    # al menos el 70 % de la descripción contractual, con mínimo 30
+    # caracteres para evitar coincidencias demasiado generales.
+    minimo_prefijo = max(
+        30,
+        int(len(contractual) * 0.70),
+    )
+    if (
+        contractual.startswith(compacto)
+        and len(compacto) >= minimo_prefijo
+    ):
+        return True
+
+    def contiene(termino: str) -> bool:
+        termino_texto = _normalizar_texto_contrato(termino)
+        termino_compacto = _normalizar_codigo_tecnologia(termino)
+        return (
+            termino_texto in texto
+            or termino_compacto in compacto
+        )
+
+    for obligatorio in regla["obligatorias"]:
+        if not contiene(obligatorio):
+            return False
+
+    for alternativas in regla["alternativas"]:
+        if not any(contiene(alternativa) for alternativa in alternativas):
+            return False
+
+    return True
+
+
+def validar_factura_mutual_con_csv(
+    xml_bytes: bytes,
+    csv_bytes: bytes,
+    nombre: str = "factura.xml",
+    mapa_at_mutual: Optional[
+        Dict[str, List[Dict[str, Any]]]
+    ] = None,
+) -> ResultadoValidacionMutual:
+    """Valida autorización EPS y tratamiento AT de forma independiente.
+
+    La autorización no determina el código del servicio. El CSV se usa para
+    confirmar que la autorización fue emitida por la EPS y está aprobada.
+    El código y la descripción del tratamiento se obtienen del archivo AT.
+    """
+    resultado = ResultadoValidacionMutual(nombre=nombre)
+
+    try:
+        datos_xml = _extraer_datos_validacion_xml_mutual(xml_bytes)
+        resultado.factura = datos_xml["factura"]
+        factura_normalizada = _normalizar_factura_mutual(
+            datos_xml["factura"]
+        )
+
+        filas_csv = _leer_csv_mutual(csv_bytes)
+        errores: List[str] = []
+        detalles: List[str] = []
+
+        autorizaciones_globales = datos_xml["autorizaciones_globales"]
+        autorizaciones_lineas_xml = set().union(
+            *(
+                linea["autorizaciones"]
+                for linea in datos_xml["lineas"]
+            )
+        )
+        autorizaciones_xml = (
+            autorizaciones_lineas_xml or autorizaciones_globales
+        )
+        resultado.autorizaciones_xml = "; ".join(
+            _autorizaciones_mostrables(autorizaciones_xml)
+        )
+
+        if not autorizaciones_xml:
+            errores.append(
+                "La factura XML no contiene número de autorización."
+            )
+
+        # ------------------------------------------------------------------
+        # Autorización: XML + AT + CSV EPS
+        # ------------------------------------------------------------------
+        registros_at = (
+            (mapa_at_mutual or {}).get(factura_normalizada, [])
+        )
+
+        if not registros_at:
+            errores.append(
+                f"{datos_xml['factura']}: no se encontró en el archivo AT "
+                "de los ZIP RIPS cargados."
+            )
+
+        autorizaciones_at = set().union(
+            *(
+                registro["autorizaciones"]
+                for registro in registros_at
+            )
+        ) if registros_at else set()
+
+        resultado.autorizaciones_at = "; ".join(
+            _autorizaciones_mostrables(autorizaciones_at)
+        )
+
+        if registros_at and not autorizaciones_at:
+            errores.append(
+                "Los registros AT no contienen número de autorización."
+            )
+
+        if (
+            autorizaciones_xml
+            and autorizaciones_at
+            and not (autorizaciones_xml & autorizaciones_at)
+        ):
+            errores.append(
+                "La autorización del XML no coincide con la informada "
+                "en el archivo AT."
+            )
+
+        candidatas_csv = [
+            fila
+            for fila in filas_csv
+            if autorizaciones_xml & _autorizaciones_fila_csv(fila)
+        ] if autorizaciones_xml else []
+
+        if autorizaciones_xml and not candidatas_csv:
+            errores.append(
+                "La autorización del XML no aparece en el CSV de Mutual."
+            )
+
+        autorizaciones_csv = set().union(
+            *(
+                _autorizaciones_fila_csv(fila)
+                for fila in candidatas_csv
+            )
+        ) if candidatas_csv else set()
+
+        resultado.autorizacion_csv = "; ".join(
+            _autorizaciones_mostrables(autorizaciones_csv)
+        )
+
+        estados = sorted(
+            {
+                _normalizar_texto_contrato(
+                    fila.get("C_ESTADO_SOLICITUD")
+                )
+                for fila in candidatas_csv
+                if fila.get("C_ESTADO_SOLICITUD")
+            }
+        )
+        resultado.estado_autorizacion = "; ".join(estados)
+
+        aprobadas = [
+            fila
+            for fila in candidatas_csv
+            if _normalizar_texto_contrato(
+                fila.get("C_ESTADO_SOLICITUD")
+            ) == "APROBADO"
+        ]
+
+        if candidatas_csv and not aprobadas:
+            errores.append(
+                "La autorización aparece en el CSV, pero ninguna fila "
+                "está en estado APROBADO."
+            )
+
+        # C_CODIGO_PRODUCTO y C_CONTRATADO NO se comparan con el AT.
+        # Son datos independientes de la autorización.
+        if aprobadas:
+            detalles.append(
+                "Autorización confirmada en el CSV de la EPS y en "
+                "estado APROBADO. El código de producto del CSV no se "
+                "usó para determinar el tratamiento."
+            )
+
+        # ------------------------------------------------------------------
+        # Tratamiento: código y descripción del AT
+        # ------------------------------------------------------------------
+        codigos_at = sorted(
+            {
+                registro["codigo"]
+                for registro in registros_at
+                if registro["codigo"]
+            }
+        )
+        descripciones_at = [
+            registro["descripcion"]
+            for registro in registros_at
+            if registro["descripcion"]
+        ]
+
+        resultado.codigo_at = "; ".join(codigos_at)
+        resultado.descripcion_at = " | ".join(
+            dict.fromkeys(descripciones_at)
+        )
+
+        if registros_at and not codigos_at:
+            errores.append(
+                "Los registros AT no contienen código de tecnología."
+            )
+
+        tratamientos = []
+        for registro in registros_at:
+            codigo_at = registro["codigo"]
+            descripcion_at = registro["descripcion"]
+            numero_linea = registro["linea"]
+
+            if not codigo_at:
+                errores.append(
+                    f"AT línea {numero_linea}: código de tecnología vacío."
+                )
+                continue
+
+            if codigo_at not in TRATAMIENTOS_CONTRATADOS_MUTUAL:
+                permitidos = ", ".join(
+                    TRATAMIENTOS_CONTRATADOS_MUTUAL
+                )
+                errores.append(
+                    f"AT línea {numero_linea}: código {codigo_at} no está "
+                    f"dentro de los tratamientos contratados: {permitidos}."
+                )
+                continue
+
+            tratamientos.append(
+                TRATAMIENTOS_CONTRATADOS_MUTUAL[codigo_at][
+                    "descripcion"
+                ]
+            )
+
+            if not _descripcion_valida_para_codigo(
+                codigo_at,
+                descripcion_at,
+            ):
+                errores.append(
+                    f"AT línea {numero_linea}: la descripción no "
+                    f"corresponde al tratamiento {codigo_at}."
+                )
+
+        resultado.tratamiento_esperado = " | ".join(
+            dict.fromkeys(tratamientos)
+        )
+
+        # ------------------------------------------------------------------
+        # Coherencia XML frente al AT
+        # ------------------------------------------------------------------
+        codigos_xml = sorted(
+            {
+                _normalizar_codigo_tecnologia(linea["codigo"])
+                for linea in datos_xml["lineas"]
+                if linea["codigo"]
+            }
+        )
+        descripciones_xml = [
+            linea["descripcion"]
+            for linea in datos_xml["lineas"]
+            if linea["descripcion"]
+        ]
+
+        resultado.codigo_xml = "; ".join(codigos_xml)
+        resultado.descripcion_xml = " | ".join(
+            dict.fromkeys(descripciones_xml)
+        )
+
+        if codigos_xml and codigos_at and set(codigos_xml) != set(codigos_at):
+            errores.append(
+                "El código facturado en el XML no coincide con el código "
+                "del tratamiento reportado en AT: "
+                f"XML={', '.join(codigos_xml)}; "
+                f"AT={', '.join(codigos_at)}."
+            )
+
+        if codigos_at:
+            detalles.append(
+                "Tratamiento validado desde AT contra el catálogo "
+                "contractual configurado: "
+                + ", ".join(codigos_at)
+                + "."
+            )
+
+        resultado.detalles = detalles
+
+        if errores:
+            resultado.ok = False
+            resultado.estado = "RECHAZADO"
+            resultado.mensaje = " | ".join(
+                dict.fromkeys(errores)
+            )
+        else:
+            resultado.ok = True
+            resultado.estado = "VÁLIDO"
+            resultado.mensaje = (
+                "Autorización EPS aprobada y tratamiento AT validado "
+                "contra el catálogo contractual."
+            )
+
+    except Exception as exc:
+        resultado.ok = False
+        resultado.estado = "ERROR"
+        resultado.mensaje = str(exc)
+
+    return resultado
+
+
+
 def inferir_regimen_desde_csv_mutual(
     xml_bytes: bytes,
     csv_bytes: bytes,
@@ -1236,11 +1941,28 @@ def corregir_xml_con_plantilla(
     cucon: str,
     nombre: str = "factura.xml",
     regimen: Optional[str] = None,
+    csv_mutual_bytes: Optional[bytes] = None,
+    mapa_at_mutual: Optional[
+        Dict[str, List[Dict[str, Any]]]
+    ] = None,
 ) -> ResultadoCorreccion:
     """Igual que corregir_xml pero usando la plantilla de referencia interna.
 
     El usuario sólo sube su factura incompleta; la plantilla es fija.
     """
+    if csv_mutual_bytes is not None:
+        validacion = validar_factura_mutual_con_csv(
+            xml_bytes,
+            csv_mutual_bytes,
+            nombre,
+            mapa_at_mutual=mapa_at_mutual,
+        )
+        if not validacion.ok:
+            res = ResultadoCorreccion(nombre=nombre)
+            res.ok = False
+            res.mensaje = validacion.mensaje
+            return res
+
     try:
         plantilla = cargar_plantilla()
     except FileNotFoundError:
@@ -1248,10 +1970,17 @@ def corregir_xml_con_plantilla(
         res.ok = False
         res.mensaje = "No se encontró la plantilla de referencia interna."
         return res
-    return corregir_xml(
+    resultado = corregir_xml(
         xml_bytes,
         plantilla,
         cucon,
         nombre,
         regimen,
     )
+    if (
+        resultado.ok
+        and csv_mutual_bytes is not None
+        and validacion.detalles
+    ):
+        resultado.cambios[0:0] = validacion.detalles
+    return resultado

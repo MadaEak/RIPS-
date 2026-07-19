@@ -39,8 +39,12 @@ from limpiador_rips import (  # noqa: E402
     inferir_regimen_zip,
 )
 from corrector_xml import (  # noqa: E402
+    ResultadoCorreccion,
+    VERSION_CORRECTOR_XML_MUTUAL,
     corregir_xml_con_plantilla,
+    consolidar_at_mutual,
     inferir_regimen_desde_csv_mutual,
+    validar_factura_mutual_con_csv,
 )
 from generador_json import CreadorJsonRips, normalizar_factura  # noqa: E402
 from limpiador_rips_sura import limpiar_zip_sura  # noqa: E402
@@ -491,10 +495,14 @@ with tab1:
 with tab2:
     if eps_seleccionada == "Mutual":
             st.subheader("🩺 Corrector de Facturas Electrónicas (FEV Salud)")
+            st.success(
+                f"Validador Mutual activo: {VERSION_CORRECTOR_XML_MUTUAL}"
+            )
             st.caption(
                 "Completa facturas (AttachedDocument) incompletas usando como plantilla un XML "
                 "de referencia válido. Inserta el grupo sector salud y coloca el CUCON en "
-                "NUMERO_CONTRATO. La firma electrónica se conserva intacta."
+                "NUMERO_CONTRATO. El bloque de firma no se edita, pero el contenido "
+                "modificado debe seguir el flujo de refirma o reemisión que aplique."
             )
 
             with st.expander("⚙️ Configuración del corrector XML — EPS Mutual", expanded=True):
@@ -504,18 +512,21 @@ with tab2:
                     st.markdown(
                         "1. Carga uno o varios XML de facturas **incompletas**.\n"
                         "2. Carga el CSV de autorizaciones de Mutual.\n"
-                        "3. Escribe el **CUCON**.\n"
-                        "4. Detecta o selecciona el régimen y procesa.\n\n"
+                        "3. Carga el ZIP de RIPS que contiene el archivo AT.\n"
+                        "4. Revisa autorización y tratamiento contratado.\n"
+                        "5. Escribe el **CUCON** y procesa.\n\n"
                         "La plantilla de referencia es **interna**; no necesitas subirla."
                     )
 
                 with col_funciones:
                     st.markdown("**Qué hace el corrector**")
                     st.markdown(
-                        "- Completa los campos requeridos del sector salud\n"
-                        "- Coloca el **CUCON** en `NUMERO_CONTRATO`\n"
-                        "- Define cobertura contributiva o subsidiada\n"
-                        "- Ajusta la estructura a la Resolución 000948 de 2026"
+                        "- Verifica la autorización de forma independiente\n"
+                        "- Confirma que esté APROBADA en el CSV de la EPS\n"
+                        "- Lee el código y descripción desde el archivo AT\n"
+                        "- Valida el AT contra los tratamientos contratados\n"
+                        "- Compara el código facturado en XML con el código AT\n"
+                        "- Coloca el **CUCON** y ajusta la Resolución 000948 de 2026"
                     )
 
             xmls_subidos = st.file_uploader(
@@ -531,15 +542,83 @@ with tab2:
             )
 
             csv_mutual_xml = st.file_uploader(
-                "CSV de autorizaciones de Mutual para detectar el régimen",
+                "CSV de autorizaciones de Mutual — obligatorio",
                 type=["csv"],
                 key="csv_mutual_corrector_xml",
                 help=(
-                    "Se busca cada factura por NUMERO_AUTORIZACION y, como respaldo, "
-                    "por C_DOCUMENTO_AFILIADO. ESSC07 = contributivo; "
-                    "ESS207 = subsidiado."
+                    "Se usa para validar que la autorización exista, "
+                    "esté APROBADA y para detectar el régimen. "
+                    "C_CODIGO_PRODUCTO no determina el tratamiento. "
+                    "ESSC07 = contributivo; ESS207 = subsidiado."
                 ),
             )
+
+            rips_mutual_xml = st.file_uploader(
+                "ZIP de RIPS Mutual con el archivo AT — obligatorio",
+                type=["zip"],
+                accept_multiple_files=True,
+                key="rips_mutual_corrector_xml",
+                help=(
+                    "El código y la descripción del tratamiento se leen "
+                    "del archivo AT. Puede cargar uno o varios ZIP."
+                ),
+            )
+
+            mapa_at_mutual = {}
+            error_at_mutual = None
+
+            if rips_mutual_xml:
+                try:
+                    mapa_at_mutual = consolidar_at_mutual(
+                        [
+                            (archivo.name, archivo.getvalue())
+                            for archivo in rips_mutual_xml
+                        ]
+                    )
+
+                    resumen_at = []
+                    for factura, registros in sorted(
+                        mapa_at_mutual.items()
+                    ):
+                        resumen_at.append(
+                            {
+                                "factura": factura,
+                                "autorizaciones AT": "; ".join(
+                                    sorted(
+                                        set().union(
+                                            *(
+                                                registro[
+                                                    "autorizaciones"
+                                                ]
+                                                for registro in registros
+                                            )
+                                        )
+                                    )
+                                ),
+                                "códigos AT": "; ".join(
+                                    sorted(
+                                        {
+                                            registro["codigo"]
+                                            for registro in registros
+                                            if registro["codigo"]
+                                        }
+                                    )
+                                ),
+                                "registros AT": len(registros),
+                            }
+                        )
+
+                    st.caption("Tratamientos encontrados en los RIPS")
+                    st.dataframe(
+                        resumen_at,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                except Exception as exc:
+                    error_at_mutual = str(exc)
+                    st.error(
+                        f"No fue posible leer los archivos AT: {exc}"
+                    )
 
             regimen_xml = st.selectbox(
                 "Régimen manual de respaldo",
@@ -554,6 +633,84 @@ with tab2:
                     "solo se usa cuando el CSV no encuentra una coincidencia."
                 ),
             )
+
+            validaciones_mutual_xml = {}
+            if (
+                xmls_subidos
+                and csv_mutual_xml is not None
+                and rips_mutual_xml
+                and not error_at_mutual
+            ):
+                csv_validacion_bytes = csv_mutual_xml.getvalue()
+                for archivo in xmls_subidos:
+                    validaciones_mutual_xml[archivo.name] = (
+                        validar_factura_mutual_con_csv(
+                            archivo.getvalue(),
+                            csv_validacion_bytes,
+                            archivo.name,
+                            mapa_at_mutual=mapa_at_mutual,
+                        )
+                    )
+
+                st.subheader("🔎 Validación previa Mutual")
+                filas_validacion_mutual = [
+                    validacion.to_dict()
+                    for validacion in validaciones_mutual_xml.values()
+                ]
+                st.dataframe(
+                    filas_validacion_mutual,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                salida_validacion_mutual = io.StringIO()
+                if filas_validacion_mutual:
+                    escritor_validacion = csv.DictWriter(
+                        salida_validacion_mutual,
+                        fieldnames=list(
+                            filas_validacion_mutual[0].keys()
+                        ),
+                    )
+                    escritor_validacion.writeheader()
+                    escritor_validacion.writerows(
+                        filas_validacion_mutual
+                    )
+                    st.download_button(
+                        "⬇️ Descargar validación Mutual (.csv)",
+                        data=salida_validacion_mutual.getvalue().encode(
+                            "utf-8-sig"
+                        ),
+                        file_name="VALIDACION_MUTUAL_AUTORIZACION_AT.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+
+                validas = sum(
+                    1
+                    for validacion in validaciones_mutual_xml.values()
+                    if validacion.ok
+                )
+                rechazadas = len(validaciones_mutual_xml) - validas
+                if rechazadas:
+                    st.warning(
+                        f"{validas} factura(s) válidas y "
+                        f"{rechazadas} bloqueada(s). Las válidas sí podrán "
+                        "procesarse."
+                    )
+                else:
+                    st.success(
+                        "Todas las facturas superaron la validación previa."
+                    )
+
+                with st.expander("📋 Tecnologías contratadas configuradas"):
+                    st.markdown(
+                        "- `132P01`: Internación parcial en hospital "
+                        "(hospital día), psiquiatría general.\n"
+                        "- `135M02`: Internación hospitalaria por consumo "
+                        "de sustancias psicoactivas.\n"
+                        "- `131M02`: Internación en unidad de salud mental, "
+                        "complejidad mediana."
+                    )
 
             if not xmls_subidos:
                 st.info("👆 Carga al menos una factura incompleta y escribe el CUCON.")
@@ -573,9 +730,42 @@ with tab2:
                         regimen_valor = None
                         detalle_regimen = ""
 
+                        if csv_bytes is None or not mapa_at_mutual:
+                            res = ResultadoCorreccion(nombre=f.name)
+                            res.ok = False
+                            res.mensaje = (
+                                "Cargue el CSV de Mutual y el ZIP de RIPS "
+                                "con el archivo AT."
+                            )
+                            resultados.append(res)
+                            barra.progress(
+                                (i + 1) / len(xmls_subidos),
+                                text=f"Bloqueado {f.name}",
+                            )
+                            continue
+
+                        validacion = validaciones_mutual_xml.get(f.name)
+                        if validacion is None:
+                            validacion = validar_factura_mutual_con_csv(
+                                xml_bytes,
+                                csv_bytes,
+                                f.name,
+                                mapa_at_mutual=mapa_at_mutual,
+                            )
+
+                        if not validacion.ok:
+                            res = ResultadoCorreccion(nombre=f.name)
+                            res.ok = False
+                            res.mensaje = validacion.mensaje
+                            resultados.append(res)
+                            barra.progress(
+                                (i + 1) / len(xmls_subidos),
+                                text=f"Bloqueado {f.name}",
+                            )
+                            continue
+
                         if regimen_xml == "Detectar automáticamente con CSV":
                             if csv_bytes is None:
-                                from corrector_xml import ResultadoCorreccion
                                 res = ResultadoCorreccion(nombre=f.name)
                                 res.ok = False
                                 res.mensaje = (
@@ -593,7 +783,6 @@ with tab2:
                             )
 
                             if regimen_valor is None:
-                                from corrector_xml import ResultadoCorreccion
                                 res = ResultadoCorreccion(nombre=f.name)
                                 res.ok = False
                                 res.mensaje = (
@@ -614,6 +803,8 @@ with tab2:
                             cucon,
                             f.name,
                             regimen=regimen_valor,
+                            csv_mutual_bytes=csv_bytes,
+                            mapa_at_mutual=mapa_at_mutual,
                         )
                         if res.ok and detalle_regimen:
                             res.cambios.insert(0, detalle_regimen)
@@ -649,8 +840,15 @@ with tab2:
                                     mime="application/xml",
                                     key=f"xml_{res.nombre}",
                                 )
-                                with st.expander("👁️ Ver XML corregido (factura embebida)"):
-                                    st.code(res.invoice_corregido, language="xml")
+                                mostrar_xml = st.checkbox(
+                                    "👁️ Ver XML corregido (factura embebida)",
+                                    key=f"ver_xml_mutual_{res.nombre}",
+                                )
+                                if mostrar_xml:
+                                    st.code(
+                                        res.invoice_corregido,
+                                        language="xml",
+                                    )
 
                     # Descarga masiva
                     buenos = [r for r in st.session_state.resultados_xml if r.ok and r.xml_bytes]
